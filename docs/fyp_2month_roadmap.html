@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', sans-serif;
+    background: #0d1117;
+    color: #e6edf3;
+    padding: 24px;
+    min-height: 100vh;
+  }
+  h1 {
+    text-align: center;
+    font-size: 20px;
+    font-weight: 700;
+    color: #58a6ff;
+    margin-bottom: 4px;
+    letter-spacing: 0.5px;
+  }
+  .subtitle {
+    text-align: center;
+    font-size: 12px;
+    color: #8b949e;
+    margin-bottom: 24px;
+  }
+  .month-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 16px;
+    margin-top: 8px;
+  }
+  .month-badge {
+    padding: 4px 16px;
+    border-radius: 20px;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 1px;
+  }
+  .m1 { background: #1f3a5c; color: #58a6ff; border: 1px solid #1f6feb; }
+  .m2 { background: #1a3a2a; color: #3fb950; border: 1px solid #238636; }
+  .month-line { flex: 1; height: 1px; background: #21262d; }
+
+  .weeks-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+    margin-bottom: 20px;
+  }
+  .week-card {
+    background: #161b22;
+    border: 1px solid #21262d;
+    border-radius: 10px;
+    padding: 14px;
+    position: relative;
+    transition: border-color 0.2s;
+  }
+  .week-card:hover { border-color: #388bfd; }
+  .week-card.critical { border-left: 3px solid #f85149; }
+  .week-card.important { border-left: 3px solid #d29922; }
+  .week-card.build { border-left: 3px solid #58a6ff; }
+  .week-card.integrate { border-left: 3px solid #bc8cff; }
+  .week-card.finish { border-left: 3px solid #3fb950; }
+
+  .week-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+  }
+  .week-num {
+    font-size: 11px;
+    font-weight: 700;
+    color: #8b949e;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+  .week-tag {
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-weight: 600;
+  }
+  .tag-data { background: #1f3a5c; color: #58a6ff; }
+  .tag-train { background: #3d1f1f; color: #f85149; }
+  .tag-rag { background: #2d1f3d; color: #bc8cff; }
+  .tag-agent { background: #1f2d3d; color: #79c0ff; }
+  .tag-memory { background: #1f3a2d; color: #3fb950; }
+  .tag-backend { background: #3d2d1f; color: #e3b341; }
+  .tag-frontend { background: #1f3a3a; color: #39d353; }
+  .tag-eval { background: #3a1f3a; color: #d2a8ff; }
+
+  .week-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: #e6edf3;
+    margin-bottom: 8px;
+  }
+  .task-list { list-style: none; }
+  .task-list li {
+    font-size: 11.5px;
+    color: #8b949e;
+    padding: 3px 0;
+    padding-left: 14px;
+    position: relative;
+    line-height: 1.5;
+  }
+  .task-list li::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    color: #30363d;
+  }
+  .task-list li.key {
+    color: #c9d1d9;
+    font-weight: 500;
+  }
+  .task-list li.key::before { color: #58a6ff; }
+
+  .deliverable {
+    margin-top: 10px;
+    padding: 7px 10px;
+    background: #0d1117;
+    border-radius: 6px;
+    border: 1px dashed #30363d;
+    font-size: 11px;
+    color: #3fb950;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .deliverable::before { content: '✓'; font-weight: 700; }
+
+  .milestone-bar {
+    background: #161b22;
+    border: 1px solid #21262d;
+    border-radius: 10px;
+    padding: 16px 20px;
+    margin-top: 8px;
+  }
+  .milestone-bar h3 {
+    font-size: 12px;
+    color: #8b949e;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 12px;
+  }
+  .milestones {
+    display: flex;
+    gap: 0;
+    align-items: center;
+  }
+  .milestone {
+    flex: 1;
+    text-align: center;
+    position: relative;
+  }
+  .milestone:not(:last-child)::after {
+    content: '';
+    position: absolute;
+    top: 14px;
+    right: -50%;
+    width: 100%;
+    height: 2px;
+    background: linear-gradient(90deg, #238636, #1f6feb);
+    z-index: 0;
+  }
+  .m-dot {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    margin: 0 auto 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 700;
+    position: relative;
+    z-index: 1;
+  }
+  .m-dot.done { background: #238636; color: #fff; border: 2px solid #3fb950; }
+  .m-dot.mid { background: #1f6feb; color: #fff; border: 2px solid #58a6ff; }
+  .m-dot.end { background: #8957e5; color: #fff; border: 2px solid #bc8cff; }
+  .m-label { font-size: 10px; color: #8b949e; line-height: 1.4; }
+  .m-week { font-size: 10px; color: #30363d; margin-top: 2px; }
+
+  .rules-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 10px;
+    margin-top: 14px;
+  }
+  .rule-card {
+    background: #161b22;
+    border: 1px solid #21262d;
+    border-radius: 8px;
+    padding: 12px;
+    text-align: center;
+  }
+  .rule-icon { font-size: 20px; margin-bottom: 6px; }
+  .rule-title { font-size: 11px; font-weight: 700; color: #e6edf3; margin-bottom: 4px; }
+  .rule-desc { font-size: 10px; color: #8b949e; line-height: 1.5; }
+</style>
+</head>
+<body>
+
+<h1>🏥 Health Intelligence Companion — FYP Roadmap</h1>
+<p class="subtitle">8 Weeks · From Scratch to Submission · Asadullah Shehbaz</p>
+
+<!-- MONTH 1 -->
+<div class="month-header">
+  <span class="month-badge m1">MONTH 1 — BUILD THE BRAIN</span>
+  <div class="month-line"></div>
+</div>
+
+<div class="weeks-grid">
+
+  <!-- Week 1 -->
+  <div class="week-card important">
+    <div class="week-header">
+      <span class="week-num">Week 1</span>
+      <span class="week-tag tag-data">DATA COLLECTION</span>
+    </div>
+    <div class="week-title">📦 Dataset Setup & Environment</div>
+    <ul class="task-list">
+      <li class="key">Download ChatDoctor 100k from HuggingFace</li>
+      <li class="key">Download MedQA, MedMCQA, MedDialog, iCliniq, PubMedQA</li>
+      <li>Setup Kaggle notebook environment</li>
+      <li>Install: transformers, peft, bitsandbytes, trl, datasets</li>
+      <li class="key">Explore + clean each dataset (remove noise, duplicates)</li>
+      <li>Setup project GitHub repo with proper structure</li>
+      <li>Setup PostgreSQL locally for development</li>
+    </ul>
+    <div class="deliverable">All raw datasets downloaded + cleaned + GitHub repo live</div>
+  </div>
+
+  <!-- Week 2 -->
+  <div class="week-card important">
+    <div class="week-header">
+      <span class="week-num">Week 2</span>
+      <span class="week-tag tag-data">DATA PREP</span>
+    </div>
+    <div class="week-title">🔧 Data Formatting + Urdu Synthetic Data</div>
+    <ul class="task-list">
+      <li class="key">Convert ALL datasets to instruction format (instruction/input/output JSON)</li>
+      <li class="key">Output format: diagnosis + confidence + reasoning + medicines + diet + exercise</li>
+      <li class="key">Generate 5000 Urdu/Roman Urdu synthetic QA pairs via GPT-4o API</li>
+      <li>Merge all datasets into single training file</li>
+      <li>Split: 90% train / 10% validation</li>
+      <li>Final dataset size: ~65-80k samples</li>
+    </ul>
+    <div class="deliverable">Single merged instruction-format dataset ready for training</div>
+  </div>
+
+  <!-- Week 3 -->
+  <div class="week-card critical">
+    <div class="week-header">
+      <span class="week-num">Week 3</span>
+      <span class="week-tag tag-train">FINE-TUNING 🔥</span>
+    </div>
+    <div class="week-title">🧠 QLoRA Fine-Tune BioMistral-7B</div>
+    <ul class="task-list">
+      <li class="key">Load BioMistral-7B with 4-bit quantization on Kaggle 2x T4</li>
+      <li class="key">Configure LoRA: r=16, alpha=32, target q/k/v/o projections</li>
+      <li class="key">Run training: 3 epochs, batch=4, grad_accum=4, lr=2e-4</li>
+      <li>Monitor loss curves every 10 steps</li>
+      <li>Save checkpoints every 100 steps</li>
+      <li class="key">Run 2nd training pass if validation loss not satisfactory</li>
+      <li>Push final adapter weights to HuggingFace Hub</li>
+    </ul>
+    <div class="deliverable">Fine-tuned BioMistral-7B adapter weights saved on HuggingFace</div>
+  </div>
+
+  <!-- Week 4 -->
+  <div class="week-card build">
+    <div class="week-header">
+      <span class="week-num">Week 4</span>
+      <span class="week-tag tag-rag">RAG PIPELINE</span>
+    </div>
+    <div class="week-title">📚 RAG + Vector Store Setup</div>
+    <ul class="task-list">
+      <li class="key">Download PubMed Open Access + WHO Guidelines + OpenFDA + MedlinePlus</li>
+      <li>Chunk documents: 512 tokens, 50 token overlap</li>
+      <li class="key">Embed with BGE-M3 (multilingual, supports Urdu)</li>
+      <li class="key">Store in Qdrant vector store (local instance)</li>
+      <li>Add BM25 hybrid retrieval alongside dense retrieval</li>
+      <li class="key">Add BGE-Reranker for top-k result reranking</li>
+      <li>Test retrieval: medicines, dosages, herbal remedies queries</li>
+    </ul>
+    <div class="deliverable">RAG pipeline retrieving accurate medical info from Qdrant</div>
+  </div>
+
+</div>
+
+<!-- MONTH 2 -->
+<div class="month-header">
+  <span class="month-badge m2">MONTH 2 — BUILD THE SYSTEM</span>
+  <div class="month-line"></div>
+</div>
+
+<div class="weeks-grid">
+
+  <!-- Week 5 -->
+  <div class="week-card build">
+    <div class="week-header">
+      <span class="week-num">Week 5</span>
+      <span class="week-tag tag-agent">LANGGRAPH AGENT</span>
+    </div>
+    <div class="week-title">🤖 Multimodal Input + LangGraph Agent</div>
+    <ul class="task-list">
+      <li class="key">Build Whisper voice-to-text pipeline</li>
+      <li class="key">Build TrOCR handwritten prescription reader</li>
+      <li>Build PyMuPDF lab report PDF parser</li>
+      <li class="key">Build LangGraph 9-node agent graph</li>
+      <li class="key">Node 1: Patient ID → Node 2: Input Processing → Node 3: Symptom Elicitation</li>
+      <li class="key">Node 4: Context Assembly → Node 5: Diagnosis → Node 6: RAG Retrieval</li>
+      <li>Node 7: Treatment Plan → Node 8: Memory Update → Node 9: Response</li>
+      <li>Add conditional loops for follow-up questioning</li>
+    </ul>
+    <div class="deliverable">Full LangGraph agent running end-to-end (text input only first)</div>
+  </div>
+
+  <!-- Week 6 -->
+  <div class="week-card integrate">
+    <div class="week-header">
+      <span class="week-num">Week 6</span>
+      <span class="week-tag tag-memory">POSTGRESQL MEMORY</span>
+    </div>
+    <div class="week-title">🗃️ Memory Layer + Full Integration</div>
+    <ul class="task-list">
+      <li class="key">Create all PostgreSQL tables: patients, sessions, medical_history, emotional_memory</li>
+      <li class="key">Wire LangGraph Node 1 to READ patient full history from PostgreSQL</li>
+      <li class="key">Wire LangGraph Node 8 to WRITE session summary to PostgreSQL</li>
+      <li>Connect multimodal inputs (Whisper + TrOCR) to agent pipeline</li>
+      <li class="key">Test full flow: voice input → diagnosis → treatment → memory saved</li>
+      <li>Fix all integration bugs between components</li>
+    </ul>
+    <div class="deliverable">Complete pipeline working: input → agent → diagnosis → PostgreSQL memory saved</div>
+  </div>
+
+  <!-- Week 7 -->
+  <div class="week-card build">
+    <div class="week-header">
+      <span class="week-num">Week 7</span>
+      <span class="week-tag tag-backend">BACKEND + FRONTEND</span>
+    </div>
+    <div class="week-title">⚙️ FastAPI + Streamlit Interface</div>
+    <ul class="task-list">
+      <li class="key">Build FastAPI endpoints: /chat, /upload-document, /patient-history, /diagnosis</li>
+      <li>Add JWT authentication for patient login</li>
+      <li class="key">Build Streamlit frontend: chat interface + document upload + history view</li>
+      <li>Display diagnosis with confidence score visualization</li>
+      <li>Display treatment plan: medicines + diet + exercise tabs</li>
+      <li class="key">Connect frontend → FastAPI → LangGraph agent → PostgreSQL</li>
+      <li>Test complete user journey end-to-end</li>
+    </ul>
+    <div class="deliverable">Working web app: patient can chat, upload docs, get diagnosis + treatment plan</div>
+  </div>
+
+  <!-- Week 8 -->
+  <div class="week-card finish">
+    <div class="week-header">
+      <span class="week-num">Week 8</span>
+      <span class="week-tag tag-eval">EVALUATION + DOCS</span>
+    </div>
+    <div class="week-title">📊 Testing + Evaluation + Submission</div>
+    <ul class="task-list">
+      <li class="key">Run RAGAS evaluation: faithfulness, answer relevancy, context precision</li>
+      <li class="key">Manual testing: 50 real patient scenarios in Urdu + English</li>
+      <li>Test edge cases: incomplete history, contradictory symptoms</li>
+      <li class="key">Fix critical bugs found during evaluation</li>
+      <li class="key">Write FYP report: problem, methodology, architecture, results</li>
+      <li>Record demo video of complete system</li>
+      <li>Deploy demo on HuggingFace Spaces</li>
+      <li class="key">Prepare viva presentation (10 slides max)</li>
+    </ul>
+    <div class="deliverable">Submitted FYP + Live Demo + Evaluation Report + Viva Ready</div>
+  </div>
+
+</div>
+
+<!-- Milestone Timeline -->
+<div class="milestone-bar">
+  <h3>📍 Key Milestones</h3>
+  <div class="milestones">
+    <div class="milestone">
+      <div class="m-dot done">W2</div>
+      <div class="m-label">Dataset<br>Ready</div>
+    </div>
+    <div class="milestone">
+      <div class="m-dot done">W3</div>
+      <div class="m-label">Model<br>Fine-tuned</div>
+    </div>
+    <div class="milestone">
+      <div class="m-dot done">W4</div>
+      <div class="m-label">RAG<br>Pipeline</div>
+    </div>
+    <div class="milestone">
+      <div class="m-dot mid">W5</div>
+      <div class="m-label">Agent<br>Running</div>
+    </div>
+    <div class="milestone">
+      <div class="m-dot mid">W6</div>
+      <div class="m-label">Memory<br>Integrated</div>
+    </div>
+    <div class="milestone">
+      <div class="m-dot mid">W7</div>
+      <div class="m-label">Full App<br>Working</div>
+    </div>
+    <div class="milestone">
+      <div class="m-dot end">W8</div>
+      <div class="m-label">Submitted<br>✓</div>
+    </div>
+  </div>
+</div>
+
+<!-- Golden Rules -->
+<div class="rules-grid">
+  <div class="rule-card">
+    <div class="rule-icon">⚡</div>
+    <div class="rule-title">MVP First Rule</div>
+    <div class="rule-desc">Text input must work perfectly before adding voice or OCR. Never build V2 before V1 is stable.</div>
+  </div>
+  <div class="rule-card">
+    <div class="rule-icon">🔥</div>
+    <div class="rule-title">Week 3 is Critical</div>
+    <div class="rule-desc">Fine-tuning week has zero flexibility. If training fails, debug immediately — don't lose days.</div>
+  </div>
+  <div class="rule-card">
+    <div class="rule-icon">🎯</div>
+    <div class="rule-title">Scope Lock</div>
+    <div class="rule-desc">No new features after Week 6. Everything after is integration, testing, and polish only.</div>
+  </div>
+</div>
+
+</body>
+</html>
