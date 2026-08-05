@@ -1,9 +1,11 @@
 # User-specified paths
 .env 
+
 notebooks/
 gradio-app/
 llama.cpp/
-
+CLAUDE.md 
+logs.txt 
 # Environment & Secret Files (Security Risk)
 .env
 .env.*
