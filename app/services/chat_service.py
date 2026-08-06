@@ -1,3 +1,4 @@
+# app/services/chat_service.py
 import asyncio
 from typing import AsyncGenerator
 

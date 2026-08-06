@@ -1,3 +1,4 @@
+# app/core/llm.py
 from llama_cpp import Llama
 
 from app.config import settings
@@ -10,6 +11,7 @@ logger.info("Loading Llama model...")
 llm = Llama(
     model_path=settings.MODEL_PATH,
     n_ctx=2048,
+    verbose=False
 )
 
 logger.info("Llama model loaded.")

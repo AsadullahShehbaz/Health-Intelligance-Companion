@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     QDRANT_API_KEY: str
 
     # ── Auth ──────────────────────────────────────────────────────────────
-    GROQ_API_KEY: str
+    HF_TOKEN: str
     SECRET_KEY: str
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15          # short-lived access token

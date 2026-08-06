@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.core.rag.embedder import get_embedder
 from app.api.auth import router as auth_router
 from app.api.chat import router as chat_router
 from app.config import settings
@@ -29,7 +30,10 @@ def validate_settings():
 async def lifespan(app: FastAPI):
 
     validate_settings()
-
+    get_embedder()
+    # app.state.llm = load_llm()
+    # app.state.embedder = load_embedder()      # new
+    # app.state.agent = build_health_agent()    # new
     await init_models()
 
     yield
