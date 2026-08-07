@@ -1,45 +1,119 @@
 import { createContext, useContext, useState, useEffect, useCallback } from "react";
+import {
+  clearSession,
+  getStoredSession,
+  isNetworkError,
+  refreshSession,
+  storeSession,
+  SESSION_REFRESHED_EVENT,
+} from "../utils/session";
 
 const API_BASE = "http://localhost:8000";
 
 const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null);
-  const [token, setToken] = useState(() => localStorage.getItem("access_token"));
-  const [loading, setLoading] = useState(true);
+  // Whole session (access token + refresh token + cached profile) lives in
+  // localStorage via utils/session.js, so a reload or backend restart keeps
+  // the user signed in.
+  const [session, setSession] = useState(() => getStoredSession());
+  // Only show the loading skeleton when we have a token but no cached profile
+  // to render immediately (e.g. a session stored before user caching was added).
+  const [loading, setLoading] = useState(
+    () => Boolean(getStoredSession().accessToken && !getStoredSession().user)
+  );
 
-  // Listen for 401 events from the api wrapper — forces logout on expired tokens
+  const { accessToken: token, user } = session;
+
+  // Keep React state in sync when api.js refreshes the tokens in the background.
+  useEffect(() => {
+    const handleRefreshed = (e) => {
+      const s = e.detail;
+      if (!s) return;
+      setSession((prev) => ({
+        ...prev,
+        accessToken: s.accessToken || prev.accessToken,
+        refreshToken: s.refreshToken || prev.refreshToken,
+        user: s.user || prev.user,
+      }));
+    };
+    window.addEventListener(SESSION_REFRESHED_EVENT, handleRefreshed);
+    return () => window.removeEventListener(SESSION_REFRESHED_EVENT, handleRefreshed);
+  }, []);
+
+  // Listen for 401 events from the api wrapper — forces logout when a token
+  // genuinely can't be refreshed.
   useEffect(() => {
     const handleUnauthorized = () => {
-      setToken(null);
-      setUser(null);
+      clearSession();
+      setSession({ accessToken: null, refreshToken: null, user: null });
     };
     window.addEventListener("auth:unauthorized", handleUnauthorized);
     return () => window.removeEventListener("auth:unauthorized", handleUnauthorized);
   }, []);
 
-  // On mount, validate stored token by fetching /auth/me
+  // On mount, validate the cached session. The key rule: a network error
+  // (backend restarting) must NOT log the user out — we keep the cached
+  // session and re-check a few times. Only a real 401 triggers a refresh
+  // (or a logout when the refresh token is invalid too).
   useEffect(() => {
-    if (!token) {
-      setLoading(false);
-      return;
-    }
+    // No cached session — initial `loading` is already false for this case.
+    if (!getStoredSession().accessToken) return;
 
-    fetch(`${API_BASE}/auth/me`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-      .then((res) => {
-        if (!res.ok) throw new Error("Token invalid");
-        return res.json();
-      })
-      .then((userData) => setUser(userData))
-      .catch(() => {
-        localStorage.removeItem("access_token");
-        setToken(null);
-      })
-      .finally(() => setLoading(false));
-  }, [token]);
+    let retryTimer = null;
+    let attempts = 0;
+    const MAX_RETRIES = 3;
+
+    const validate = async () => {
+      const { accessToken } = getStoredSession();
+      if (!accessToken) {
+        setLoading(false);
+        return;
+      }
+      try {
+        const res = await fetch(`${API_BASE}/auth/me`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+
+        if (res.ok) {
+          const freshUser = await res.json();
+          setSession((prev) => ({ ...prev, user: freshUser }));
+          storeSession({ user: freshUser }); // refresh the cached profile
+        } else if (res.status === 401) {
+          // Access token expired — silently refresh with the cached refresh token.
+          const refreshed = await refreshSession();
+          if (refreshed) {
+            setSession({
+              accessToken: refreshed.accessToken,
+              refreshToken: refreshed.refreshToken,
+              user: refreshed.user,
+            });
+          } else {
+            clearSession();
+            setSession({ accessToken: null, refreshToken: null, user: null });
+          }
+        } else {
+          // 403 / 5xx — treat as an untrustworthy session.
+          clearSession();
+          setSession({ accessToken: null, refreshToken: null, user: null });
+        }
+      } catch (err) {
+        if (isNetworkError(err) && attempts < MAX_RETRIES) {
+          // Backend down / restarting — keep the cached session, retry shortly.
+          attempts += 1;
+          retryTimer = setTimeout(validate, 2000 * attempts);
+        } else {
+          clearSession();
+          setSession({ accessToken: null, refreshToken: null, user: null });
+        }
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    validate();
+    return () => clearTimeout(retryTimer);
+  }, []);
 
   const login = useCallback(async (username, password) => {
     const res = await fetch(`${API_BASE}/auth/login`, {
@@ -54,10 +128,8 @@ export function AuthProvider({ children }) {
     }
 
     const data = await res.json();
-    localStorage.setItem("access_token", data.access_token);
-    setToken(data.access_token);
 
-    // Fetch the user profile immediately so state is consistent
+    // Fetch the user profile immediately so state is consistent.
     const userRes = await fetch(`${API_BASE}/auth/me`, {
       headers: { Authorization: `Bearer ${data.access_token}` },
     });
@@ -65,7 +137,13 @@ export function AuthProvider({ children }) {
     if (!userRes.ok) throw new Error("Failed to fetch user profile");
 
     const userData = await userRes.json();
-    setUser(userData);
+    const newSession = {
+      accessToken: data.access_token,
+      refreshToken: data.refresh_token || null,
+      user: userData,
+    };
+    storeSession(newSession);
+    setSession(newSession);
     return userData;
   }, []);
 
@@ -89,9 +167,8 @@ export function AuthProvider({ children }) {
   }, [login]);
 
   const logout = useCallback(() => {
-    localStorage.removeItem("access_token");
-    setToken(null);
-    setUser(null);
+    clearSession();
+    setSession({ accessToken: null, refreshToken: null, user: null });
   }, []);
 
   return (

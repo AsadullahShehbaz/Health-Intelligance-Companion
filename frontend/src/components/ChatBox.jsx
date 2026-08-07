@@ -1,5 +1,8 @@
 import { useState, useRef, useEffect } from "react";
 import { useAuth } from "../context/AuthContext";
+import api from "../utils/api";
+import { getStoredSession, refreshSession } from "../utils/session";
+import { fileToImageData } from "../utils/image";
 
 // ─── Markdown Renderer ─────────────────────────────────────────
 
@@ -165,15 +168,92 @@ function TypingIndicator() {
   );
 }
 
+// ─── Mode Selector ─────────────────────────────────────────────
+
+const MODES = [
+  { key: "agent", label: "Agent", hint: "Multi-step agent: translation, RAG, memory, image OCR" },
+  { key: "rag", label: "RAG", hint: "Retrieve context, then stream an answer" },
+  { key: "chat", label: "Chat", hint: "Plain streaming chat (no retrieval)" },
+];
+
+function ModeSelector({ mode, onChange, disabled }) {
+  return (
+    <div className="flex items-center gap-1 p-1 bg-[#2f2f2f] rounded-xl border border-white/10 w-fit" title={MODES.find((m) => m.key === mode)?.hint}>
+      {MODES.map((m) => (
+        <button
+          key={m.key}
+          onClick={() => onChange(m.key)}
+          disabled={disabled}
+          title={m.hint}
+          className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 disabled:opacity-50 ${
+            mode === m.key
+              ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+              : "text-gray-400 border border-transparent hover:text-gray-200 hover:bg-white/5"
+          }`}
+        >
+          {m.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ─── Message Metadata Chips ─────────────────────────────────────
+
+function MessageMeta({ meta }) {
+  if (!meta) return null;
+
+  const langChip = meta.detected_lang && meta.detected_lang !== "en"
+    ? { label: `🌐 ${meta.detected_lang}` }
+    : null;
+  const ragChip = meta.needs_rag
+    ? { label: `🧠 RAG: ${meta.retrieval_decision || "retrieved"}` }
+    : { label: "💬 Direct" };
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 mt-2">
+      <span className="text-[10px] uppercase tracking-wider text-gray-600 mr-0.5">agent:</span>
+      {langChip && (
+        <span className="text-[11px] px-2 py-0.5 rounded-md bg-white/5 border border-white/10 text-gray-400">
+          {langChip.label}
+        </span>
+      )}
+      <span className="text-[11px] px-2 py-0.5 rounded-md bg-white/5 border border-white/10 text-gray-400">
+        {ragChip.label}
+      </span>
+      {meta.sources?.length > 0 && (
+        <span className="flex items-center gap-1 flex-wrap">
+          {meta.sources.map((src, i) => (
+            <span
+              key={i}
+              className="text-[11px] px-2 py-0.5 rounded-md bg-blue-500/10 border border-blue-500/20 text-blue-300 font-mono"
+              title="Source"
+            >
+              {src}
+            </span>
+          ))}
+        </span>
+      )}
+    </div>
+  );
+}
+
 // ─── Main Component ─────────────────────────────────────────────
 
 export default function ChatBox({ onOpenLogin }) {
-  const { isAuthenticated, loading: authLoading } = useAuth();
+  const { user, isAuthenticated, loading: authLoading } = useAuth();
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
+  const [mode, setMode] = useState("agent");
+  const [image, setImage] = useState(null); // { base64, dataUrl, name }
   const [loading, setLoading] = useState(false);
   const bottomRef = useRef(null);
   const textareaRef = useRef(null);
+  const fileInputRef = useRef(null);
+
+  // The agent keys conversation memory by thread_id = patient_id, so the
+  // logged-in user's id gives each patient their own continuity.
+  const patientId = user?.id || user?.username || "guest";
 
   // Auto-resize textarea
   useEffect(() => {
@@ -189,51 +269,110 @@ export default function ChatBox({ onOpenLogin }) {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
 
+  // Stream a completion from /chat/stream or /rag/stream (token-by-token).
+  const streamChat = async (endpoint, history, isRetry = false) => {
+    const { accessToken } = getStoredSession();
+    const headers = { "Content-Type": "application/json" };
+    if (accessToken) headers["Authorization"] = `Bearer ${accessToken}`;
+
+    const res = await fetch(`http://localhost:8000${endpoint}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ messages: history }),
+    });
+
+    // Access token expired mid-session — silently refresh and retry once.
+    if (res.status === 401 && !isRetry) {
+      const session = await refreshSession();
+      if (session?.accessToken) return streamChat(endpoint, history, true);
+      throw new Error("Session expired. Please sign in again.");
+    }
+
+    if (!res.ok) throw new Error(`Server returned ${res.status}`);
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let assistantMsg = { role: "assistant", content: "" };
+    setMessages([...history, assistantMsg]);
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      assistantMsg = {
+        ...assistantMsg,
+        content: assistantMsg.content + decoder.decode(value, { stream: true }),
+      };
+      setMessages([...history, { ...assistantMsg }]);
+    }
+  };
+
+  // Run the full LangGraph agent (/agent/invoke). Returns the answer + metadata.
+  const runAgent = async (text) => {
+    const payload = { patient_id: patientId, query: text };
+    if (image) payload.image_base64 = image.base64;
+
+    const data = await api.post("/agent/invoke", payload);
+
+    return {
+      role: "assistant",
+      content: data.answer,
+      meta: {
+        detected_lang: data.detected_lang,
+        needs_rag: data.needs_rag,
+        retrieval_decision: data.retrieval_decision,
+        sources: data.sources || [],
+      },
+    };
+  };
+
   const sendMessage = async (overrideText) => {
     const text = overrideText !== undefined ? overrideText : input;
     if (!text.trim() || loading) return;
 
     const userMsg = { role: "user", content: text };
-    const newMessages = [...messages, userMsg];
-    setMessages(newMessages);
+    if (image) userMsg.imageDataUrl = image.dataUrl;
+    const history = [...messages, userMsg];
+    const attachedImage = image; // snapshot before clearing
+
+    setMessages(history);
     setInput("");
+    setImage(null);
     setLoading(true);
 
     try {
-      const res = await fetch("http://localhost:8000/chat/stream", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: newMessages }),
-      });
-
-      if (!res.ok) throw new Error(`Server returned ${res.status}`);
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let assistantMsg = { role: "assistant", content: "" };
-      setMessages([...newMessages, assistantMsg]);
-
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        assistantMsg = {
-          ...assistantMsg,
-          content: assistantMsg.content + decoder.decode(value, { stream: true }),
-        };
-        setMessages([...newMessages, { ...assistantMsg }]);
+      if (mode === "agent") {
+        const assistantMsg = await runAgent(text);
+        setMessages([...history, assistantMsg]);
+      } else {
+        const endpoint = mode === "rag" ? "/rag/stream" : "/chat/stream";
+        await streamChat(endpoint, history);
       }
     } catch (err) {
       console.error("Chat error:", err);
+      const extra = mode === "agent" && attachedImage
+        ? " The agent endpoint needs a running server with the LangGraph stack (checkpointer + Qdrant)."
+        : "";
       setMessages([
-        ...messages,
-        userMsg,
+        ...history,
         {
           role: "assistant",
-          content: `**Connection error:** ${err.message}\n\nMake sure your local API server is running at \`http://localhost:8000\`.`,
+          content: `**Connection error:** ${err.message}\n\nMake sure your local API server is running at \`http://localhost:8000\`.${extra}`,
         },
       ]);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleFileChange = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-selecting the same file
+    if (!file) return;
+    try {
+      const img = await fileToImageData(file);
+      setImage(img);
+    } catch (err) {
+      console.error("Image read failed:", err);
     }
   };
 
@@ -335,6 +474,15 @@ export default function ChatBox({ onOpenLogin }) {
                 {msg.role === "user" ? (
                   <div className="flex justify-end px-4 py-2 group">
                     <div className="max-w-[75%] bg-[#2f2f2f] text-gray-100 rounded-2xl rounded-tr-sm px-4 py-2.5 relative">
+                      {msg.imageDataUrl && (
+                        <div className="mb-2">
+                          <img
+                            src={msg.imageDataUrl}
+                            alt="Attached"
+                            className="max-h-40 rounded-lg border border-white/10 object-contain"
+                          />
+                        </div>
+                      )}
                       <p className="whitespace-pre-wrap text-sm leading-relaxed">{msg.content}</p>
                       <div className="flex justify-end mt-1 -mb-1">
                         <CopyButton content={msg.content} />
@@ -359,6 +507,7 @@ export default function ChatBox({ onOpenLogin }) {
                         </div>
                       </div>
                       <MarkdownContent content={msg.content} />
+                      <MessageMeta meta={msg.meta} />
                     </div>
                   </div>
                 )}
@@ -373,22 +522,76 @@ export default function ChatBox({ onOpenLogin }) {
       {/* ── Input Area ── */}
       <div className="border-t border-white/10 bg-[#212121]">
         <div className="max-w-3xl mx-auto px-4 py-3">
+          <div className="flex items-center justify-between mb-2">
+            <ModeSelector mode={mode} onChange={setMode} disabled={loading} />
+            <span className="text-[11px] text-gray-600">
+              {mode === "agent"
+                ? "Agent: memory · RAG · images · multilingual"
+                : mode === "rag"
+                  ? "Retrieve context then answer"
+                  : "Plain chat, no retrieval"}
+            </span>
+          </div>
+
+          {image && (
+            <div className="flex items-center gap-2 mb-2 bg-[#2f2f2f] rounded-xl border border-white/10 px-3 py-2 w-fit">
+              <img src={image.dataUrl} alt="Attached preview" className="h-10 w-10 object-cover rounded-lg border border-white/10" />
+              <div className="text-xs text-gray-400 max-w-[180px] truncate">
+                <span className="text-gray-200 font-medium">{image.name}</span>
+                <span className="block text-[10px] text-gray-600">
+                  {mode === "agent" ? "OCR will read the text" : "Only used in Agent mode"}
+                </span>
+              </div>
+              <button
+                onClick={() => setImage(null)}
+                className="p-1 rounded-md text-gray-500 hover:text-gray-200 hover:bg-white/5 transition-colors"
+                title="Remove image"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+          )}
+
           <div className="relative flex items-end bg-[#2f2f2f] rounded-2xl border border-white/10 focus-within:border-white/20 transition-colors">
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={loading}
+              className="ml-2 mb-3.5 p-2 rounded-lg text-gray-500 hover:text-gray-200 hover:bg-white/5 transition-colors disabled:opacity-40"
+              title="Attach an image (OCR in Agent mode)"
+            >
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M2.25 15.75l5.159-5.159a2.25 2.25 0 013.182 0l5.159 5.159m-1.5-1.5l1.409-1.409a2.25 2.25 0 013.182 0l2.909 2.909M3.75 21h16.5A2.25 2.25 0 0022.5 18.75V5.25A2.25 2.25 0 0020.25 3H3.75A2.25 2.25 0 001.5 5.25v13.5A2.25 2.25 0 003.75 21zm9.75-12h.008v.008h-.008V9z" />
+              </svg>
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              onChange={handleFileChange}
+              className="hidden"
+            />
             <textarea
               ref={textareaRef}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="Message Health Intelligence..."
+              placeholder={
+                mode === "agent"
+                  ? "Describe symptoms, attach a photo, or ask in your language…"
+                  : "Message Health Intelligence…"
+              }
               disabled={loading}
               rows={1}
-              className="flex-1 bg-transparent text-gray-100 placeholder-gray-600 resize-none outline-none px-4 py-3.5 text-sm leading-relaxed max-h-[200px] scrollbar-thin"
+              className="flex-1 bg-transparent text-gray-100 placeholder-gray-600 resize-none outline-none px-3 py-3.5 text-sm leading-relaxed max-h-[200px] scrollbar-thin"
             />
             <div className="flex items-center px-3 pb-3.5">
               <button
                 onClick={() => sendMessage()}
                 disabled={!input.trim() || loading}
                 className="w-8 h-8 rounded-xl bg-white text-gray-900 flex items-center justify-center disabled:opacity-20 disabled:cursor-not-allowed hover:bg-gray-200 transition-all duration-200 active:scale-95"
+                title="Send"
               >
                 <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
                   <path d="M3.478 2.404a.75.75 0 00-.926.941l2.432 7.905H13.5a.75.75 0 010 1.5H4.984l-2.432 7.905a.75.75 0 00.926.94 60.519 60.519 0 0018.445-8.986.75.75 0 000-1.218A60.517 60.517 0 003.478 2.404z" />

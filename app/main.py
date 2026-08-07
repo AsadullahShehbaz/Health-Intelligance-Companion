@@ -4,8 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.rag.embedder import get_embedder
-from app.api.auth import router as auth_router
-from app.api.chat import router as chat_router
+from app.api import auth, chat, rag, agent  
 from app.config import settings
 from app.db.session import init_models
 from app.utils.logging_config import get_logger
@@ -52,9 +51,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(auth_router)
-app.include_router(chat_router)
 
+
+app.include_router(auth.router)
+app.include_router(chat.router)
+app.include_router(rag.router)
+app.include_router(agent.router)   # new
 
 @app.get("/")
 async def root():

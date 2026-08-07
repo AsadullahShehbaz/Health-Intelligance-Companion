@@ -2,6 +2,8 @@
 
 A full-stack medical Q&A application powered by a fine-tuned **BioMistral-7B** language model running locally via `llama-cpp-python`, augmented with a **Corrective Retrieval-Augmented Generation (Corrective RAG)** pipeline over a Qdrant vector store. Users sign up, verify their email, and chat with an AI health assistant that streams responses token-by-token.
 
+At its core the app runs a **LangGraph health agent** (`/agent/invoke`) that chains OCR, multilingual translation, RAG retrieval, and long-term per-patient memory into a single multi-node pipeline — the preferred path over the raw streaming endpoints.
+
 Built as a final-year project (FYP 2026): the base model was fine-tuned with **QLoRA** on 10,000 balanced medical samples and quantized to GGUF (`Q4_K_M`) so it runs efficiently on CPU.
 
 > ⚠️ **Disclaimer:** This application provides general health information only and does not constitute medical advice. Always consult a qualified healthcare professional for medical concerns.
@@ -10,27 +12,32 @@ Built as a final-year project (FYP 2026): the base model was fine-tuned with **Q
 
 ## Features
 
+- 🤖 **LangGraph agent (`/agent/invoke`)** — multi-node pipeline with automatic conversation continuity (checkpointer) and persistent per-patient symptom memory (store), with structured output enforced by llama.cpp grammars
 - 💬 **Streaming chat** — token-by-token responses with a custom in-app Markdown renderer (code blocks, bold/italic, auto-linked URLs, copy buttons)
 - 🔍 **Corrective RAG (`/rag/stream`)** — retrieves medical context from a Qdrant vector store, evaluates retrieval quality, and falls back to / augments with live web search when the local context is weak
+- 🌍 **Multilingual** — queries in non-English languages (e.g. Urdu) are auto-detected, translated to English for the pipeline, and the answer is translated back
+- 🖼️ **Image support** — optional image input is run through OCR (`tesseract`) and the extracted text is folded into the query
 - 🔐 **Full auth lifecycle** — register, login, refresh-token rotation, profile updates, password change/reset, email verification
 - 🛡️ **Token-based security** — short-lived JWTs with `token_version` invalidation, opaque SHA-256-hashed refresh/reset/verify tokens, Argon2 password hashing
 - 🔒 **Enforced password policy** — server-side validation (length, case, digits, specials, common-password blocklist) mirrored in the UI
-- 🤖 **Local LLM inference** — the fine-tuned BioMistral-7B GGUF runs on your machine; no external API calls for chat generation
 - 🎨 **Dark, responsive UI** — React 19 + Tailwind 4
 
 ---
 
 ## Tech Stack
 
-| Layer        | Technology                                                       |
-|--------------|------------------------------------------------------------------|
-| Backend      | Python, FastAPI, Uvicorn, Pydantic v2, async SQLAlchemy + `asyncpg` |
-| LLM          | `llama-cpp-python` + BioMistral-7B GGUF (`Q4_K_M`)               |
-| Embeddings   | `sentence-transformers` (`all-MiniLM-L6-v2`)                     |
-| Vector store | Qdrant (cloud) + Web search fallback via SerpAPI                 |
-| Database     | PostgreSQL (Neon, serverless)                                    |
-| Auth         | JWT (`python-jose`), opaque tokens, Argon2 (`argon2-cffi`)       |
-| Frontend     | React 19, Vite 8, Tailwind 4, ESLint                             |
+| Layer          | Technology                                                                 |
+|----------------|----------------------------------------------------------------------------|
+| Agent framework| LangGraph + `langgraph-checkpoint-postgres` (checkpointer & store, psycopg) |
+| Backend        | Python, FastAPI, Uvicorn, Pydantic v2, async SQLAlchemy + `asyncpg`       |
+| LLM            | `llama-cpp-python` + BioMistral-7B GGUF (`Q4_K_M`)                        |
+| Embeddings     | `sentence-transformers` (`all-MiniLM-L6-v2`)                              |
+| Vector store   | Qdrant (cloud) + Web search fallback via SerpAPI                          |
+| Database       | PostgreSQL (Neon, serverless)                                             |
+| Translation    | `langdetect` + `deep-translator` (GoogleTranslator)                       |
+| OCR            | `pytesseract` (Tesseract)                                                 |
+| Auth           | JWT (`python-jose`), opaque tokens, Argon2 (`argon2-cffi`)                |
+| Frontend       | React 19, Vite 8, Tailwind 4, ESLint                                      |
 
 ---
 
@@ -43,6 +50,8 @@ Built as a final-year project (FYP 2026): the base model was fine-tuned with **Q
 - The fine-tuned **BioMistral-7B GGUF model** (see [Model Setup](#model-setup))
 - A **Qdrant** instance with the `health_knowledge` collection populated
 - A **PostgreSQL** database (the project uses Neon serverless Postgres)
+- **Tesseract** OCR engine (for the agent's image input) — `choco install tesseract` / `apt install tesseract-ocr`
+- Network access to **Google Translate** (used by the agent's multilingual nodes)
 
 ### 1. Backend
 
@@ -51,14 +60,14 @@ Built as a final-year project (FYP 2026): the base model was fine-tuned with **Q
 conda create -n ft-project python=3.11
 conda activate ft-project
 
-# Install dependencies
+# Install dependencies (includes the RAG, agent, translation, and OCR stacks)
 pip install -r requirements.txt
-# NOTE: the RAG stack (qdrant-client, sentence-transformers, serpapi)
-# is not yet in requirements.txt — install if you plan to use /rag/stream:
-pip install qdrant-client sentence-transformers serpapi
 
 # Configure environment — copy the required keys into a .env at the repo root
 # (see Environment Variables below)
+
+# Tesseract is required for the image/OCR node (installed separately)
+#   Windows: choco install tesseract   |   Ubuntu: sudo apt install tesseract-ocr
 
 # Run the API server (http://localhost:8000)
 uvicorn app.main:app --reload
@@ -103,7 +112,7 @@ SMTP_PASSWORD=
 SMTP_FROM=
 ```
 
-> ⚠️ **Config drift:** `app/config.py` defines `DATABASE_URL`, `QDRANT_URL`, `QDRANT_API_KEY`, `HF_TOKEN`, and `SECRET_KEY`, but `app/main.py:validate_settings` still reads `settings.GROQ_API_KEY` (removed from `Settings`) and `app/core/rag/corrective_rag.py` reads `settings.SERP_API_KEY`. The app will raise at startup until that reference is reconciled. This is tracked for the next cleanup pass.
+> ⚠️ **Known config drift:** `app/config.py` `Settings` defines `DATABASE_URL`, `QDRANT_URL`, `QDRANT_API_KEY`, `HF_TOKEN`, `SECRET_KEY`, and `SERP_API_KEY` — but **not** `GROQ_API_KEY`, even though `app/main.py:validate_settings` still reads `settings.GROQ_API_KEY`. With `extra="ignore"` this raises `AttributeError` at startup, so the server will not boot until `GROQ_API_KEY` is added back to `Settings` (or dropped from `validate_settings`). This is tracked for the next cleanup pass.
 
 Optional tuning via `app/config.py`:
 
@@ -155,6 +164,26 @@ Keep blocking LLM / Qdrant calls off the event loop — never call `llm.create_c
 2. **Evaluate** — `evaluate_relevance` classifies retrieval as `correct` / `ambiguous` / `incorrect` via score thresholds (`RELEVANCE_THRESHOLD = 0.5` on max score, `AMBIGUOUS_THRESHOLD = 0.35` on avg score).
 3. **Correct** — on `incorrect`, the weak local context is **replaced** with SerpAPI Google results (prepended before the retrieved docs); on `ambiguous`, web results are **appended** to **augment** it. Returns the top-5 docs, the `decision`, and the average retrieval score.
 
+### LangGraph health agent (`/agent/invoke`)
+
+The newest and preferred path (`app/agent/`). `build_health_agent()` compiles a `StateGraph(AgentState)`, served by `app/services/agent_service.py:run_agent` via `run_in_threadpool(agent.invoke, ...)` (LangGraph's sync API must stay off the event loop, the same pattern as the streaming bridge). The `thread_id` is the `patient_id`, so every patient gets its own conversation thread.
+
+Node pipeline (`app/agent/graph.py`):
+
+```
+ocr → translate_in → router → fetch_facts → (needs_rag?) rewrite → rag → reasoner → extract_facts → translate_out → END
+```
+
+- **`ocr`** — if an `image_base64` is supplied, runs `pytesseract` (`app/core/rag/ocr.py`) and appends the extracted text to `raw_input`.
+- **`translate_in` / `translate_out`** — detect the input language (`langdetect`) and round-trip non-English queries through GoogleTranslate (`app/core/rag/translation.py`); the answer is translated back to the source language.
+- **`router`** — decides `needs_rag` (is this a factual medical question?) and `save_memory` (is it worth remembering?) via an LLM call constrained by a llama.cpp **grammar** compiled from the `RouterDecision` Pydantic schema, so the model physically cannot emit invalid JSON. Fails safe to `needs_rag=True, save_memory=True`.
+- **`fetch_facts`** — searches the per-patient memory store for prior symptoms (`app/db/store.py`, namespace `("patient_facts", patient_id)`).
+- **`rewrite` → `rag`** — only reached when `needs_rag` is true: the query rewriter clarifies it, then `rag` reuses the same `corrective_retrieve`.
+- **`reasoner`** — builds the final prompt from patient facts + retrieved docs and generates the answer with `llm.create_chat_completion`.
+- **`extract_facts`** — when the router has `save_memory`, extracts a `SymptomFact` (also grammar-constrained) and stores it under the patient's fact namespace, so a symptom like "fever last week" survives across unrelated turns.
+
+**Automatic memory, no manual queries:** the graph is compiled with a LangGraph **checkpointer** (`app/db/checkpointer.py`, `PostgresSaver`) and **store** (`app/db/store.py`, `PostgresStore`). The checkpointer persists the whole `AgentState` per `thread_id`, giving conversation continuity; the store provides long-term fact retrieval. Both are module-level singletons (`setup()` is idempotent) that rewrite `postgresql+asyncpg` → `postgresql` on `DATABASE_URL` because LangGraph uses psycopg. This replaced the old hand-rolled `get_memory`/`save_memory` nodes.
+
 ### Auth & tokens (`app/core/security.py`)
 
 - **Access tokens:** short-lived JWTs (default 15 min) carrying a `token_version` claim.
@@ -178,13 +207,14 @@ Keep blocking LLM / Qdrant calls off the event loop — never call `llm.create_c
 
 ```
 ├── app/                      # FastAPI backend
-│   ├── api/                  # Routers: chat, rag, auth
+│   ├── agent/                # LangGraph health agent (graph, state, nodes/)
+│   ├── api/                  # Routers: auth, chat, rag, agent
 │   ├── core/                 # LLM wrapper, security/tokens, password policy
-│   │   └── rag/              # embedder, qdrant_store, corrective_rag
-│   ├── db/                   # Async engine + session, Base
+│   │   └── rag/              # embedder, qdrant_store, corrective_rag, translation, ocr
+│   ├── db/                   # Async engine + session, Base, LangGraph checkpointer + store
 │   ├── models/               # SQLAlchemy models (User, RefreshToken, Token)
-│   ├── schemas/              # Pydantic request/response models
-│   ├── services/             # Business logic (streaming chat, RAG chat)
+│   ├── schemas/              # Pydantic request/response models (incl. Agent schemas)
+│   ├── services/             # Business logic (chat, RAG chat, agent service)
 │   ├── tests/                # Standalone smoke scripts (not a pytest suite)
 │   ├── utils/                # Email, logging
 │   ├── deps.py               # Auth dependencies (get_current_user, require_role)
@@ -255,7 +285,32 @@ All routes live under the `app/api/` package.
 }
 ```
 
-> ⚠️ **Current wiring:** `app/api/rag.py` defines the router, but it is **not yet registered** in `app/main.py`, so `/rag/stream` is not live until `app.include_router(rag_router)` is added. The RAG service is also the latest addition and still being integrated.
+### Agent — `/agent`
+
+| Method | Endpoint         | Description                                                                           |
+|--------|------------------|---------------------------------------------------------------------------------------|
+| POST   | `/agent/invoke`  | Run the full LangGraph health agent (translate → route → RAG → answer → remember)     |
+
+```json
+// POST /agent/invoke
+{
+  "patient_id": "user-42",
+  "query": "مجھے بخار ہے"                      // or English, or attach an image
+  // "image_base64": "<base64>…"               // optional — OCR'd before routing
+}
+```
+
+```json
+// 200 OK
+{
+  "answer": "I understand you have a fever…",
+  "detected_lang": "ur",
+  "needs_rag": true,
+  "retrieval_decision": "correct",
+  "sources": ["source-a.md", "source-b.md"],
+  "save_memory": true
+}
+```
 
 Interactive API docs are available at `http://localhost:8000/docs` (Swagger UI) when the server is running.
 
@@ -268,10 +323,14 @@ The `app/tests/` directory contains **standalone smoke scripts** — not a `pyte
 ```bash
 conda activate ft-project
 python app/tests/test_qdrant.py          # retrieval from Qdrant
-python app/tests/test_corrective_rag.py   # full Corrective RAG pipeline
-python app/tests/test_rag_chat_stream.py  # stream a RAG completion
-python app/tests/test_chat.py             # POST /chat/stream via TestClient
+python app/tests/test_embedder.py        # embedding model loads and embeds
+python app/tests/test_corrective_rag.py  # full Corrective RAG pipeline
+python app/tests/test_rag_chat_stream.py # stream a RAG completion
+python app/tests/test_chat.py            # POST /chat/stream via TestClient
+python app/tests/test_auth.py            # register/login/refresh flow against live API
 ```
+
+To exercise the agent against a live server: `curl -X POST http://localhost:8000/agent/invoke -H "Content-Type: application/json" -d '{"patient_id":"p1","query":"I have had a fever for two days"}'`.
 
 ---
 
@@ -283,7 +342,9 @@ The [`docs/`](docs/) directory contains research notes, the fine-tuning pipeline
 - [`docs/training-report.md`](docs/training-report.md) — QLoRA training + evaluation metrics (ROUGE, BERTScore, medical accuracy)
 - [`docs/basemodel-vs-ftmodel.md`](docs/basemodel-vs-ftmodel.md) — base vs. fine-tuned comparison
 - [`docs/agentic-rag-roadmap.md`](docs/agentic-rag-roadmap.md) — the Corrective RAG design roadmap
-- Plus weekly progress notes (`week1.md`–`week4.md`) and the project roadmap
+- [`docs/flow-charts/`](docs/flow-charts/) — agent-pipeline design notes: `agent-infra.md`, `router-node.md`, `rewriter.md`, `ocr-node.md`, `translate-node.md`, `translation.md`
+- [`docs/urdu-translater.md`](docs/urdu-translater.md) — multilingual (Urdu) translation notes
+- Plus weekly progress notes (`week1.md`–`week5-part2.md`) and the project roadmap
 
 ---
 

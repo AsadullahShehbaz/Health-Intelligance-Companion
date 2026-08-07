@@ -13,6 +13,15 @@ export default defineConfig([
       reactHooks.configs.flat.recommended,
       reactRefresh.configs.vite,
     ],
+    rules: {
+      // react-refresh v0.5 doesn't auto-allow `use*` hooks exported alongside
+      // components — the react-refresh/vite preset only sets allowConstantExport.
+      // AuthContext exports useAuth() (a hook) next to AuthProvider, so allow it.
+      'react-refresh/only-export-components': [
+        'error',
+        { allowConstantExport: true, allowExportNames: ['useAuth'] },
+      ],
+    },
     languageOptions: {
       globals: globals.browser,
       parserOptions: { ecmaFeatures: { jsx: true } },

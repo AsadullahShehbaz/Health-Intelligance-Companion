@@ -20,5 +20,7 @@ class AgentState(TypedDict):
 
     recent_memory: list[dict]
 
+    patient_facts: list[dict]
+
     answer: str
     final_response: str

@@ -1,8 +1,10 @@
+import { clearSession, getStoredSession, refreshSession } from "./session";
+
 const API_BASE = "http://localhost:8000";
 
 /**
  * Thin fetch wrapper that automatically attaches the stored JWT and
- * handles global auth failures (401 → emit event → logout).
+ * handles global auth failures (401 → refresh once → retry → logout).
  *
  * Usage:
  *   import api from "../utils/api";
@@ -10,11 +12,11 @@ const API_BASE = "http://localhost:8000";
  *   const result = await api.post("/auth/login", { username, password });
  */
 
-async function request(method, path, body = null) {
-  const token = localStorage.getItem("access_token");
+async function request(method, path, body = null, isRetry = false) {
+  const { accessToken } = getStoredSession();
 
   const headers = { "Content-Type": "application/json" };
-  if (token) headers["Authorization"] = `Bearer ${token}`;
+  if (accessToken) headers["Authorization"] = `Bearer ${accessToken}`;
 
   const res = await fetch(`${API_BASE}${path}`, {
     method,
@@ -22,9 +24,14 @@ async function request(method, path, body = null) {
     body: body ? JSON.stringify(body) : undefined,
   });
 
-  // Unauthorised — token is expired or invalid
-  if (res.status === 401 && token) {
-    localStorage.removeItem("access_token");
+  // Unauthorised — access token expired. Silently refresh it once and retry;
+  // only sign the user out if the refresh token is gone or invalid too.
+  if (res.status === 401 && accessToken && !isRetry) {
+    const session = await refreshSession();
+    if (session?.accessToken) {
+      return request(method, path, body, true);
+    }
+    clearSession();
     window.dispatchEvent(new CustomEvent("auth:unauthorized"));
     throw new Error("Session expired. Please sign in again.");
   }

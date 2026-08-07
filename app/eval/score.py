@@ -1,11 +1,12 @@
 # eval/score.py
 import json
-import math
 import statistics
+from pathlib import Path
 from rouge_score import rouge_scorer
 from bert_score import score as bert_score
 
-results = json.load(open("eval/results_raw.json"))
+BASE_DIR = Path(__file__).resolve().parent
+results = json.load(open(BASE_DIR / "results_raw.json"))
 scorer = rouge_scorer.RougeScorer(["rouge1", "rouge2", "rougeL"], use_stemmer=True)
 
 # ── ROUGE-1 / ROUGE-2 / ROUGE-L ──────────────────────
@@ -40,7 +41,7 @@ for i, s in enumerate(scored):
     s["ft_bertscore"]  = ft_f1[i].item()
     s["rag_bertscore"] = rag_f1[i].item()
 
-json.dump(scored, open("eval/scored.json", "w"), indent=2)
+json.dump(scored, open(BASE_DIR / "scored.json", "w"), indent=2)
 
 def avg(key):
     return statistics.mean(s[key] for s in scored)
