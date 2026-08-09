@@ -11,15 +11,24 @@ def rag_node(state: AgentState) -> AgentState:
 
     logger.info("rag | starting corrective retrieval | query=%r", query)
 
-    result = corrective_retrieve(query)
+    try:
+        result = corrective_retrieve(query)
 
-    state["retrieved_docs"] = result["docs"]
-    state["retrieval_decision"] = result["decision"]
+        state["retrieved_docs"] = result["docs"]
+        state["retrieval_decision"] = result["decision"]
 
-    logger.info(
-        "rag | decision=%s | avg_score=%s | docs=%d",
-        result["decision"],
-        result.get("avg_score"),
-        len(result["docs"]),
-    )
+        logger.info(
+            "rag | decision=%s | avg_score=%s | docs=%d",
+            result["decision"],
+            result.get("avg_score"),
+            len(result["docs"]),
+        )
+    except Exception:
+        # A dead/suspended Qdrant or failed web search must not kill the whole
+        # turn — the patient's own document (ocr_context) is often enough to
+        # answer. Degrade to no external context; the reasoner still runs.
+        logger.exception("rag | retrieval failed; continuing without external docs")
+        state["retrieved_docs"] = []
+        state["retrieval_decision"] = "failed"
+
     return state
