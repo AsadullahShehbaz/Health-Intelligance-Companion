@@ -19,6 +19,14 @@ def _format_facts(facts: list[dict]) -> str:
     return "Known patient history:\n" + "\n".join(lines)
 
 
+def _format_ocr(text: str) -> str:
+    if not text:
+        return ""
+    # The patient's photo is the primary subject — give it room without
+    # letting a big scan crowd out the retrieved context.
+    return f"Attached document (from the patient's photo):\n{text[:1000]}"
+
+
 def reasoner_node(state: AgentState) -> AgentState:
     query = state.get("rewritten_query") or state["english_query"]
 
@@ -31,6 +39,10 @@ def reasoner_node(state: AgentState) -> AgentState:
         context_block = _format_context(state.get("retrieved_docs", []))
         if context_block:
             parts.append(f"Relevant medical context:\n{context_block}")
+
+    ocr_block = _format_ocr(state.get("ocr_context", ""))
+    if ocr_block:
+        parts.append(ocr_block)
 
     parts.append(f"Question: {query}\nAnswer:")
     prompt = "\n\n".join(parts)

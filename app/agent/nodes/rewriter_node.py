@@ -5,14 +5,18 @@ from app.utils.logging_config import get_logger
 
 logger = get_logger(__name__)
 
-REWRITER_PROMPT = """Rewrite the user's message into a clear, specific
-medical question suitable for a search query. Keep it short — one
-sentence. If the message is already clear, return it unchanged.
+REWRITER_PROMPT = """Rewrite the patient's message into a clear, specific
+medical question. The patient may have attached a document (e.g. a
+prescription) — if so, their question is usually asking you to explain,
+verify, or advise on that document, not asking you to generate a new one.
+Preserve their actual intent. Keep it to one sentence.
+
+Attached document context (if any): {has_doc}
 
 Recent conversation:
 {memory}
 
-User message: "{query}"
+Patient message: "{query}"
 
 Rewritten query:"""
 
@@ -25,6 +29,11 @@ def _format_memory(memory: list[dict]) -> str:
 
 def query_rewriter_node(state: AgentState) -> AgentState:
     prompt = REWRITER_PROMPT.format(
+        has_doc=(
+            "Yes — a prescription/medical document was attached"
+            if state.get("ocr_context")
+            else "No"
+        ),
         memory=_format_memory(state.get("recent_memory", [])),
         query=state["english_query"],
     )

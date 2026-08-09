@@ -18,7 +18,10 @@ def ocr_node(state: AgentState) -> AgentState:
     extracted = extract_text_from_base64(state["image_base64"])
 
     if extracted:
-        state["ocr_context"] = f"{state['raw_input']}\n{extracted}".strip()
+        # Kept separate from raw_input/english_query so Router, Rewriter and
+        # fact-fetch never reprocess ~900 chars of document noise. Only the
+        # Reasoner consumes this (see reasoner_node).
+        state["ocr_context"] = extracted
         logger.info("ocr | extracted %d characters of text", len(extracted))
     else:
         logger.warning("ocr | no text extracted from image")

@@ -21,6 +21,7 @@ def _build_initial_state(req: AgentRequest) -> dict:
         "raw_input": req.query,
         "has_image": req.image_base64 is not None,
         "image_base64": req.image_base64,
+        "ocr_context": "",
         "detected_lang": "",
         "english_query": "",
         "rewritten_query": "",
