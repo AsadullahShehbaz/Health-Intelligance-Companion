@@ -47,7 +47,10 @@ _RETRY_DELAY_SECONDS = 0.5
 
 async def run_agent(req: AgentRequest) -> AgentResponse:
     initial_state = _build_initial_state(req)
-    config = {"configurable": {"thread_id": req.patient_id}}
+    # One thread per conversation. Defaults to patient_id so older clients
+    # (and pre-sidebar data) keep resuming the single per-patient thread.
+    thread_id = req.thread_id or req.patient_id
+    config = {"configurable": {"thread_id": thread_id}}
 
     for attempt in range(_MAX_DB_RETRIES + 1):
         try:

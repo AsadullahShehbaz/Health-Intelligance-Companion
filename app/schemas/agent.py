@@ -25,6 +25,10 @@ class AgentRequest(BaseModel):
     patient_id: str
     query: str
     image_base64: Optional[str] = None
+    # LangGraph thread id — one per conversation. Defaults to patient_id for
+    # backwards compatibility with clients that predate the sidebar, so old
+    # requests keep resuming the single per-patient thread they always had.
+    thread_id: Optional[str] = None
 
 
 class AgentResponse(BaseModel):
@@ -34,3 +38,31 @@ class AgentResponse(BaseModel):
     retrieval_decision: Optional[str] = None
     sources: list[str] = []
     save_memory: bool
+
+
+# ── Conversation history (sidebar) ──────────────────────────────────────
+# Reconstructed directly from the LangGraph checkpointer — there is no
+# separate conversation table. See app/services/conversation_service.py.
+
+
+class ConversationMessage(BaseModel):
+    role: str
+    content: str
+    timestamp: Optional[str] = None
+    meta: Optional[dict] = None  # mirrors the in-session meta chips (lang, rag, sources)
+
+
+class ConversationMeta(BaseModel):
+    thread_id: str
+    title: str
+    updated_at: str
+    message_count: int
+    snippet: Optional[str] = None
+
+
+class ConversationDetail(BaseModel):
+    thread_id: str
+    patient_id: str
+    title: str
+    updated_at: str
+    messages: list[ConversationMessage]

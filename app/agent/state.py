@@ -8,6 +8,8 @@ class AgentState(TypedDict):
     has_image: bool
     image_base64: Optional[str]
 
+    ocr_context: str
+
     detected_lang: str
     english_query: str
     rewritten_query: str

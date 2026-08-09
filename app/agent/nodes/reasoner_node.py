@@ -1,6 +1,9 @@
 # app/agent/nodes/reasoner_node.py
 from app.core.llm import llm
 from app.agent.state import AgentState
+from app.utils.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 def _format_context(docs: list[dict]) -> str:
@@ -39,4 +42,12 @@ def reasoner_node(state: AgentState) -> AgentState:
         stream=False,
     )
     state["answer"] = response["choices"][0]["message"]["content"].strip()
+
+    logger.info(
+        "reasoner | needs_rag=%s | docs=%d | facts=%d | answer_len=%d",
+        state.get("needs_rag"),
+        len(state.get("retrieved_docs", [])),
+        len(state.get("patient_facts", [])),
+        len(state["answer"]),
+    )
     return state

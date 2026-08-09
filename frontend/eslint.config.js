@@ -16,10 +16,12 @@ export default defineConfig([
     rules: {
       // react-refresh v0.5 doesn't auto-allow `use*` hooks exported alongside
       // components — the react-refresh/vite preset only sets allowConstantExport.
-      // AuthContext exports useAuth() (a hook) next to AuthProvider, so allow it.
+      // AuthContext exports useAuth() (a hook) next to AuthProvider, and
+      // ConversationsContext exports useConversations() next to
+      // ConversationsProvider, so allow both.
       'react-refresh/only-export-components': [
         'error',
-        { allowConstantExport: true, allowExportNames: ['useAuth'] },
+        { allowConstantExport: true, allowExportNames: ['useAuth', 'useConversations'] },
       ],
     },
     languageOptions: {

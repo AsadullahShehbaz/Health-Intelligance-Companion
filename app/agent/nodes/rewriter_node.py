@@ -1,6 +1,9 @@
 # app/agent/nodes/rewriter_node.py
 from app.core.llm import llm
 from app.agent.state import AgentState
+from app.utils.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 REWRITER_PROMPT = """Rewrite the user's message into a clear, specific
 medical question suitable for a search query. Keep it short — one
@@ -25,7 +28,15 @@ def query_rewriter_node(state: AgentState) -> AgentState:
         memory=_format_memory(state.get("recent_memory", [])),
         query=state["english_query"],
     )
-    output = llm(prompt, max_tokens=80, temperature=0.3)
-    rewritten = output["choices"][0]["text"].strip()
+
+    try:
+        output = llm(prompt, max_tokens=80, temperature=0.3)
+        rewritten = output["choices"][0]["text"].strip()
+    except Exception:
+        logger.exception("rewriter | LLM call failed; falling back to original query")
+        rewritten = ""
+
     state["rewritten_query"] = rewritten if rewritten else state["english_query"]
+
+    logger.info("rewriter | rewritten_query=%r", state["rewritten_query"])
     return state

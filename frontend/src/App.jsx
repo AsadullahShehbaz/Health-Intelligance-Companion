@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { AuthProvider } from "./context/AuthContext";
+import { AuthProvider, useAuth } from "./context/AuthContext";
+import { ConversationsProvider } from "./context/ConversationsContext";
 import Navbar from "./components/Navbar";
 import Chatbox from "./components/ChatBox";
 import LoginModal from "./components/LoginModal";
@@ -39,10 +40,22 @@ function AppContent() {
   );
 }
 
+function AuthedTree() {
+  const { user } = useAuth();
+  // Keying the provider by user id remounts all conversation state on
+  // sign-in / sign-out / patient switch, so one patient never sees another's
+  // threads or messages.
+  return (
+    <ConversationsProvider key={user?.id || "anon"}>
+      <AppContent />
+    </ConversationsProvider>
+  );
+}
+
 function App() {
   return (
     <AuthProvider>
-      <AppContent />
+      <AuthedTree />
     </AuthProvider>
   );
 }

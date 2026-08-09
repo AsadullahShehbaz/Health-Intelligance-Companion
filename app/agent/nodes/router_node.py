@@ -62,4 +62,10 @@ def router_node(state: AgentState) -> AgentState:
 
     state["needs_rag"] = decision.needs_rag
     state["save_memory"] = decision.save_memory
+
+    logger.info(
+        "router | decision | needs_rag=%s | save_memory=%s",
+        decision.needs_rag,
+        decision.save_memory,
+    )
     return state
