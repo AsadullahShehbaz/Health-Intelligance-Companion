@@ -1,5 +1,6 @@
 # app/services/agent_service.py
 import asyncio
+import time
 
 import psycopg
 from starlette.concurrency import run_in_threadpool
@@ -40,40 +41,91 @@ _MAX_DB_RETRIES = 2
 _RETRY_DELAY_SECONDS = 0.5
 
 
-async def run_agent(req: AgentRequest, ocr_text: str = "") -> AgentResponse:
+async def run_agent(
+    req: AgentRequest,
+    ocr_text: str = "",
+) -> AgentResponse:
+
+    start_time = time.monotonic()
+
     initial_state = _build_initial_state(req, ocr_text)
+
     # One thread per conversation. Defaults to patient_id so older clients
     # (and pre-sidebar data) keep resuming the single per-patient thread.
     thread_id = req.thread_id or req.patient_id
+
     # recursion_limit is LangGraph's own graph-level safety net, on top of
     # MAX_TOOL_CALLS inside the agent node — belt and suspenders against a
     # tool loop that never calls final_answer.
-    config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 15}
+    config = {
+        "configurable": {
+            "thread_id": thread_id,
+        },
+        "recursion_limit": 15,
+    }
+
+    logger.info(
+        "Agent request started | thread=%s | OCR=%s",
+        thread_id,
+        "yes" if ocr_text else "no",
+    )
 
     for attempt in range(_MAX_DB_RETRIES + 1):
+
         try:
-            result = await run_in_threadpool(agent.invoke, initial_state, config)
-            break
-        except psycopg.OperationalError as e:
-            if attempt >= _MAX_DB_RETRIES:
-                logger.exception("Agent graph execution failed after %d retries", attempt + 1)
-                raise
-            logger.warning(
-                "Transient DB error during agent invoke (attempt %d/%d), retrying: %s",
+            logger.info(
+                "Running agent graph | attempt %d/%d",
                 attempt + 1,
-                _MAX_DB_RETRIES,
-                e,
+                _MAX_DB_RETRIES + 1,
             )
+
+            result = await run_in_threadpool(
+                agent.invoke,
+                initial_state,
+                config,
+            )
+
+            break
+
+        except psycopg.OperationalError as e:
+
+            if attempt >= _MAX_DB_RETRIES:
+                logger.exception(
+                    "Agent failed after %d attempts",
+                    attempt + 1,
+                )
+                raise
+
+            logger.warning(
+                "Temporary database error | attempt %d/%d | retrying...",
+                attempt + 1,
+                _MAX_DB_RETRIES + 1,
+            )
+
             await asyncio.sleep(_RETRY_DELAY_SECONDS)
+
         except Exception:
             logger.exception("Agent graph execution failed")
             raise
+
+    elapsed = time.monotonic() - start_time
+
+    logger.info(
+        "Agent request finished in %.2fs | RAG=%s | memory=%s",
+        elapsed,
+        result.get("needs_rag", False),
+        result.get("saved_memory", False),
+    )
 
     return AgentResponse(
         answer=result["final_response"],
         detected_lang=result["detected_lang"],
         needs_rag=result.get("needs_rag", False),
         retrieval_decision=result.get("retrieval_decision") or None,
-        sources=[d.get("source") for d in result.get("retrieved_docs", [])[:3] if d.get("source")],
+        sources=[
+            d.get("source")
+            for d in result.get("retrieved_docs", [])[:3]
+            if d.get("source")
+        ],
         save_memory=result.get("saved_memory", False),
     )

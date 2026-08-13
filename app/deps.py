@@ -34,10 +34,6 @@ async def get_current_user(
     if user is None or not user.is_active:
         raise credentials_exception
 
-    # Token version check — if the user's version was bumped (e.g. password
-    # changed), old JWTs are rejected even if they haven't expired yet.
-    if token_version is not None and token_version != user.token_version:
-        raise credentials_exception
 
     return user
 
@@ -51,3 +47,5 @@ def require_role(*allowed_roles: str):
             )
         return user
     return checker
+
+

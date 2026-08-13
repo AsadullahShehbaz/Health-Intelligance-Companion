@@ -5,7 +5,6 @@ OUTPUT_FILE = "codebase_context.md"
 
 # Directories to skip
 EXCLUDE_DIRS = {
-    "frontend",
     "__pycache__", 
     ".git",
     ".vscode",

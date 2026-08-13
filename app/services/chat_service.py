@@ -15,13 +15,20 @@ async def stream_chat(
     temperature: float,
     max_tokens: int,
 ) -> AsyncGenerator[str, None]:
-
+    logger.debug(
+        "Starting stream_chat | msg_count=%d, temp=%.2f, max_tokens=%d",
+        len(messages),
+        temperature,
+        max_tokens,
+    )
+    logger.info(f"Message : {messages}")
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue = asyncio.Queue()
 
     def producer():
-
+        chunk_count = 0
         try:
+            logger.debug("Initializing LLM completion stream...")
             stream = llm.create_chat_completion(
                 messages=messages,
                 temperature=temperature,
@@ -30,17 +37,18 @@ async def stream_chat(
             )
 
             for chunk in stream:
-
                 delta = chunk["choices"][0]["delta"]
 
                 if "content" in delta:
+                    chunk_count += 1
                     loop.call_soon_threadsafe(
                         queue.put_nowait,
                         delta["content"],
                     )
 
-        except Exception:
+            logger.debug("Producer finished. Total chunks yielded: %d", chunk_count)
 
+        except Exception:
             logger.exception("Chat generation failed")
 
             loop.call_soon_threadsafe(
@@ -49,7 +57,6 @@ async def stream_chat(
             )
 
         finally:
-
             loop.call_soon_threadsafe(
                 queue.put_nowait,
                 _SENTINEL,
@@ -58,13 +65,14 @@ async def stream_chat(
     loop.run_in_executor(None, producer)
 
     while True:
-
         item = await queue.get()
 
         if item is _SENTINEL:
+            logger.debug("stream_chat completed successfully")
             break
 
         if isinstance(item, Exception):
+            logger.debug("stream_chat terminating due to error")
             yield "\n\nServer Error"
             return
 

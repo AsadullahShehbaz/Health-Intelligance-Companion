@@ -1,17 +1,25 @@
-"""Password hashing, JWT management, and opaque-token generation."""
+"""Password hashing, JWT management."""
 
-import hashlib
-import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
-from jose import JWTError, jwt
+from jose import jwt
 
 from app.config import settings
+from fastapi import Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
 
 ph = PasswordHasher()
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+credentials_exception = HTTPException(
+    status_code=status.HTTP_401_UNAUTHORIZED,
+    detail="Could not validate credentials",
+    headers={"WWW-Authenticate": "Bearer"},
+)
 
 # ======================================================================
 # Password hashing
@@ -52,26 +60,17 @@ def decode_access_token(token: str) -> dict:
     """Decode a JWT.  Raises ``JWTError`` on expiry or bad signature."""
     return jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
 
-
-# ======================================================================
-# Opaque tokens (refresh, password-reset, email-verify)
-# Stored as SHA-256 hashes so a DB leak doesn't expose live tokens.
-# ======================================================================
-
-
-def _hash_token(raw: str) -> str:
-    return hashlib.sha256(raw.encode()).hexdigest()
-
-
-def generate_opaque_token() -> tuple[str, str]:
-    """Return ``(raw_token, sha256_hash)``.
-
-    Give the raw token to the client; store the hash in the database.
-    """
-    raw = secrets.token_urlsafe(48)
-    return raw, _hash_token(raw)
+def get_current_user(token: str = Depends(oauth2_scheme)):
+    try:
+        payload = decode_access_token(token)
+        user_id: str | None = payload.get("sub")
+        token_version: int | None = payload.get("token_version")
+        if user_id is None:
+            raise credentials_exception
+    except Exception:
+        raise credentials_exception
 
 
-def verify_opaque_token(raw: str, stored_hash: str) -> bool:
-    """Constant-time comparison of a raw token against its stored hash."""
-    return secrets.compare_digest(_hash_token(raw), stored_hash)
+
+
+

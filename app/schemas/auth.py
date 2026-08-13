@@ -36,48 +36,6 @@ class RefreshTokenRequest(BaseModel):
     refresh_token: str
 
 
-class ForgotPasswordRequest(BaseModel):
-    email: EmailStr
-
-
-class ResetPasswordRequest(BaseModel):
-    token: str
-    new_password: str = Field(..., min_length=1, max_length=128)
-
-    @model_validator(mode="after")
-    def _check_password_policy(self):
-        errors = validate_password(self.new_password)
-        if errors:
-            raise ValueError(
-                "; ".join(e.message for e in errors)
-            )
-        return self
-
-
-class ChangePasswordRequest(BaseModel):
-    current_password: str
-    new_password: str = Field(..., min_length=1, max_length=128)
-
-    @model_validator(mode="after")
-    def _check_password_policy(self):
-        errors = validate_password(self.new_password)
-        if errors:
-            raise ValueError(
-                "; ".join(e.message for e in errors)
-            )
-        return self
-
-
-class UpdateProfileRequest(BaseModel):
-    full_name: Optional[str] = Field(None, max_length=100)
-    email: Optional[EmailStr] = None
-
-
-class DeleteAccountRequest(BaseModel):
-    confirmation: str
-    password: str
-
-
 # =========================================================================
 # Response Schemas
 # =========================================================================

@@ -10,12 +10,6 @@
       "Bash($PY *)",
       "PowerShell(& \"C:\\\\miniconda3\\\\envs\\\\ft-project\\\\python.exe\" \"C:\\\\Users\\\\jason\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\week6_graph_check.py\")"
     ]
-  },
-  "env": {
-    "ANTHROPIC_BASE_URL": "https://router.bynara.id/v1",
-    "ANTHROPIC_AUTH_TOKEN": "sk-nry-ziuUkwMCFl2Z9EY0Wom0o4yxpD2ZNfp66M14cJieENU",
-    "ANTHROPIC_MODEL": "oc/deepseek-v4-flash-free"
-  },
-  "effortLevel": "max"
+  }
 }
 
