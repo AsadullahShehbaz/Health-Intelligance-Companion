@@ -20,16 +20,12 @@ def _build_initial_state(req: AgentRequest, ocr_text: str = "") -> dict:
         "patient_id": req.patient_id,
         "raw_input": req.query,
         "ocr_context": ocr_text,
-        "detected_lang": "",
-        "english_query": "",
-        "answer": "",
         "final_response": "",
+        "detected_lang": "",
         "needs_rag": False,
         "retrieval_decision": "",
         "retrieved_docs": [],
-        "saved_memory": False,
         "messages": [],
-        "tool_results": "",
         "tool_call_count": 0,
     }
 
@@ -79,8 +75,5 @@ async def run_agent(req: AgentRequest, ocr_text: str = "") -> AgentResponse:
         needs_rag=result.get("needs_rag", False),
         retrieval_decision=result.get("retrieval_decision") or None,
         sources=[d.get("source") for d in result.get("retrieved_docs", [])[:3] if d.get("source")],
-        # Per-turn: agent_node sets this from THIS turn's tool messages. Scanning
-        # the whole thread's tool_calls leaked "Saved" onto every later turn of
-        # a resumed conversation.
         save_memory=result.get("saved_memory", False),
     )

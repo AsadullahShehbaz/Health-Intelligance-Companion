@@ -66,12 +66,6 @@ def agent_node(state: AgentState) -> AgentState:
     count = state.get("tool_call_count", 0)
 
     # build tool_results from message history (replaces a separate post_tool node).
-    # Scan the whole *current turn*, not just the most recent tools round: in a
-    # shared thread the previous turn's terminal answer is an AIMessage with no
-    # tool_calls, so stop only there. This turn's tool-call AIMessages are skipped,
-    # which keeps earlier rounds' results (e.g. RAG docs after a later fast tool
-    # call) in scope — the old break-at-any-AIMessage dropped every round but the
-    # newest one, both from the prompt and from the RAG meta scan below.
     messages = state.get("messages", [])
     tool_msgs = []
     for m in reversed(messages):
@@ -90,10 +84,12 @@ def agent_node(state: AgentState) -> AgentState:
     # force a final answer once the loop budget is exhausted
     forced_final = count >= MAX_TOOL_CALLS
 
+    # Phase 2: no more translation node, so we reason directly on raw_input
+    # (the user's original text, whatever language it's in).
     prompt = SYSTEM_PROMPT.format(
         tool_docs=_TOOL_DOCS if not forced_final else "final_answer(answer) — you MUST use this now.",
         patient_id=state["patient_id"],
-        query=state["english_query"],
+        query=state["raw_input"],
         tool_results=tool_results,
     )
     doc_section = _document_section(state)
@@ -119,33 +115,28 @@ def agent_node(state: AgentState) -> AgentState:
         answer_text = decision.answer or (
             "Based on what you've shared, please consult a doctor for a full evaluation."
         )
-        # answer is consumed by the unchanged translate_out_node, which writes
-        # final_response (the sidebar's turn-end filter keys on it being
-        # non-empty).
+        # translate_out_node is gone (Phase 2), so this node must write
+        # final_response itself now — the sidebar's turn-end filter in
+        # conversation_service.py keys on final_response being non-empty.
         state["answer"] = answer_text
+        state["final_response"] = answer_text
         new_message = AIMessage(content=answer_text)
     else:
         args = dict(decision.action_input or {})
         args.setdefault("patient_id", state["patient_id"])
         if decision.action in ("save_patient_fact", "save_emotional_state"):
-            args.setdefault("source_message", state["english_query"])
+            args.setdefault("source_message", state["raw_input"])
         elif decision.action in ("retrieve_medical_knowledge", "fetch_patient_facts"):
             # The 7B grammar output sometimes drops the query field entirely
-            # (empty action_input), which made ToolNode fail every such call
-            # with "query: Field required" and left the turn on the fallback
-            # answer. The model nearly always means the user's own question, so
-            # fall back to it and let the tool actually run.
-            args.setdefault("query", state["english_query"])
+            # (empty action_input) — fall back to the user's own question.
+            args.setdefault("query", state["raw_input"])
         new_message = AIMessage(
             content=decision.thought,
             tool_calls=[{"id": f"tc_{count}", "name": decision.action, "args": args}],
         )
         state["tool_call_count"] = count + 1
 
-    # RAG status for the sidebar meta chips + /agent/invoke response: did this
-    # turn actually hit the retrieval tool, and what did it surface? tool_msgs
-    # only holds this turn's tool results (the reverse scan stops at the
-    # previous turn's terminal AIMessage), so the meta is per-turn, not global.
+    # RAG status for the sidebar meta chips + /agent/invoke response
     rag_used = any(
         getattr(m, "name", "") == "retrieve_medical_knowledge" for m in tool_msgs
     )
@@ -167,16 +158,11 @@ def agent_node(state: AgentState) -> AgentState:
     state["retrieval_decision"] = decision_text or ("retrieved" if rag_used else "")
     state["retrieved_docs"] = [{"source": s} for s in sources[:3]]
 
-    # Per-turn memory flag, same turn-scoped scan as the RAG meta (saving a fact
-    # in an earlier turn of the same thread must not mark every later turn as
-    # "Saved"). Consumed by agent_service's AgentResponse.
+    # Per-turn memory flag, consumed by agent_service's AgentResponse.
     state["saved_memory"] = any(
         getattr(m, "name", "") in ("save_patient_fact", "save_emotional_state")
         for m in tool_msgs
     )
 
-    # Return only the new message; the add_messages reducer appends it to the
-    # persisted channel. tools_condition routes on the last message, which is
-    # exactly this one.
     state["messages"] = [new_message]
     return state
