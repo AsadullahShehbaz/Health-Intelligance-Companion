@@ -33,7 +33,7 @@ async def lifespan(app: FastAPI):
     # async SQLAlchemy tables and embedder warm-up run.
     async with db_lifespan(app):
         validate_settings()
-        get_embedder()
+        # get_embedder()
         # app.state.llm = load_llm()
         # app.state.embedder = load_embedder()      # new
         # app.state.agent = build_health_agent()    # new

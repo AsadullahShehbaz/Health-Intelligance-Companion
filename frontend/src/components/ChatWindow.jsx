@@ -1,7 +1,8 @@
 import { useRef, useState, useEffect } from "react";
 import { useConversations } from "../context/ConversationsContext";
-import api from "../utils/api";
-import { getStoredSession, refreshSession } from "../utils/session";
+import { api, getStreamUrl, getAuthHeaders } from "../utils/api";
+import { getSession } from "../utils/session";
+import { API_BASE } from "../utils/config";
 import { fileToImageData } from "../utils/image";
 import { formatRelativeTime } from "../utils/time";
 
@@ -309,29 +310,25 @@ export default function ChatWindow({ onOpenSidebar }) {
   }, [messages, sending]);
 
   // Stream a completion from /chat/stream or /rag/stream (token-by-token).
-  const streamChat = async (endpoint, history, isRetry = false) => {
-    const { accessToken } = getStoredSession();
-    const headers = { "Content-Type": "application/json" };
-    if (accessToken) headers["Authorization"] = `Bearer ${accessToken}`;
-
-    const res = await fetch(`http://localhost:8000${endpoint}`, {
-      method: "POST",
-      headers,
+  const streamChat = async (endpoint, history) => {
+    const res = await fetch(getStreamUrl(endpoint), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...getAuthHeaders(),
+      },
       body: JSON.stringify({ messages: history }),
     });
 
-    // Access token expired mid-session — silently refresh and retry once.
-    if (res.status === 401 && !isRetry) {
-      const session = await refreshSession();
-      if (session?.accessToken) return streamChat(endpoint, history, true);
-      throw new Error("Session expired. Please sign in again.");
+    if (res.status === 401) {
+      throw new Error('Session expired. Please sign in again.');
     }
 
     if (!res.ok) throw new Error(`Server returned ${res.status}`);
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
-    let assistantMsg = { role: "assistant", content: "" };
+    let assistantMsg = { role: 'assistant', content: '' };
     setMessages([...history, assistantMsg]);
 
     while (true) {
@@ -400,8 +397,8 @@ export default function ChatWindow({ onOpenSidebar }) {
       setMessages([
         ...history,
         {
-          role: "assistant",
-          content: `**Connection error:** ${err.message}\n\nMake sure your local API server is running at \`http://localhost:8000\`.${extra}`,
+          role: 'assistant',
+          content: `**Connection error:** ${err.message}\n\nMake sure your local API server is running at \`${API_BASE}\`.${extra}`,
         },
       ]);
     } finally {
