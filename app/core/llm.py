@@ -7,7 +7,7 @@ from app.utils.logging_config import get_logger
 
 logger = get_logger(__name__)
 
-logger.info("Loading Llama model...")
+logger.info("Loading Biomistral Fine Tuned model...")
 
 llm = Llama(
     model_path=settings.MODEL_PATH,
@@ -17,4 +17,4 @@ llm = Llama(
     verbose=False
 )
 
-logger.info("Llama model loaded.")
+logger.info("Biomistral Fine Tuned model loaded.")
