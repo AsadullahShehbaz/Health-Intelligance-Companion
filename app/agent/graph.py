@@ -5,8 +5,6 @@ from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode, tools_condition
 
 from app.agent.state import AgentState
-from app.agent.nodes.ocr_node import ocr_node
-from app.agent.nodes.translate_node import translate_in_node, translate_out_node
 from app.agent.nodes.agent_node import agent_node
 from app.agent.tools import TOOLS
 from app.db.lifespan import checkpointer, store
@@ -48,17 +46,14 @@ _tool_node = ToolNode(TOOLS)
 
 
 def _run_tools(state: AgentState) -> AgentState:
-    """Execute the tool calls in the newest AIMessage (LangGraph's prebuilt node).
-
-    ToolNode is a Runnable, not a plain function, so it can't be called
-    directly from the _logged wrapper — invoke it through its .invoke API.
-    Returns {"messages": [...]} which the add_messages reducer merges in.
-    """
+    """Execute the tool calls in the newest AIMessage (LangGraph's prebuilt node)."""
     return _tool_node.invoke(state)
 
 
 def _route_after_agent(state: AgentState) -> str:
-    route = "tools" if tools_condition(state) == "tools" else "translate_out"
+    # tools_condition looks at the last message: if it has tool_calls, go to
+    # "tools"; otherwise the agent gave a final answer, so end the turn.
+    route = "tools" if tools_condition(state) == "tools" else END
     logger.info("routing after agent -> %s", route)
     return route
 
@@ -66,19 +61,13 @@ def _route_after_agent(state: AgentState) -> str:
 def build_health_agent():
     graph = StateGraph(AgentState)
 
-    graph.add_node("ocr", _logged("ocr")(ocr_node))                    # reused unchanged
-    graph.add_node("translate_in", _logged("translate_in")(translate_in_node))   # reused unchanged
     graph.add_node("agent", _logged("agent")(agent_node))
     graph.add_node("tools", _logged("tools")(_run_tools))
-    graph.add_node("translate_out", _logged("translate_out")(translate_out_node))  # reused unchanged
-
-    graph.set_entry_point("ocr")
-    graph.add_edge("ocr", "translate_in")
-    graph.add_edge("translate_in", "agent")
-    graph.add_conditional_edges("agent", _route_after_agent, {"tools": "tools", "translate_out": "translate_out"})
+    
+    graph.set_entry_point("agent")
+    graph.add_conditional_edges("agent", _route_after_agent, {"tools": "tools", END: END})
     graph.add_edge("tools", "agent")
-    graph.add_edge("translate_out", END)
 
     compiled = graph.compile(checkpointer=checkpointer, store=store)
-    logger.info("Health agent graph compiled (5 nodes)")
+    logger.info("Health agent graph compiled (2 nodes)")
     return compiled

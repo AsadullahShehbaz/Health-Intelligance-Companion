@@ -45,6 +45,11 @@ User Input ──> ocr ──> translate_in (Google Translate API) ──> agent
 * **Problems:** Cosine scores vary wildly. Adding fallback results risks exceeding the llama_cpp model's context window (`n_ctx=2048`).
 * **Simplification:** Provide Qdrant retrieval and web search as distinct tools that the agent can choose to call based on its clinical needs, rather than using complex hardcoded decision pipelines.
 
+### 1.6 Over-Engineered Authentication & Security Pipelines (Auth Cons)
+* **Current Implementation:** High-complexity auth endpoints inside [auth.py](file:///c:/Fine%20Tuning/code/app/api/auth.py) covering Argon2 hashing, database-backed opaque refresh tokens, one-time verification tokens, account deletion, and custom password policy rule validation in [password_policy.py](file:///c:/Fine%20Tuning/code/app/core/password_policy.py).
+* **Problems:** Bloats the backend codebase with 500+ lines of enterprise-grade security code that is irrelevant for a clinical history prototype, increasing local CPU testing overhead (due to Argon2 hashing rounds).
+* **Simplification:** Eliminate one-time verification tokens, email verification, custom password complexity regex policies, and opaque refresh tokens. Keep a simple, single Register/Login endpoint returning medium-term JWTs.
+
 ---
 
 ## 2. Proposed Simplified Architecture (Target State)
@@ -65,20 +70,28 @@ Entry Node ──> Agent Node (BioMistral Direct Urdu/English) ──>   * messa
                   END ──> Return final_response
 ```
 
-### 2.1 Database & Schema Simplification
-* Store conversations and memory using clean, standard PostgreSQL tables:
-  1. `users`: Standard authentication and profiles.
-  2. `patient_facts`: Long-term medical facts (symptoms, onset, status).
-  3. `patient_emotions`: Long-term emotional records.
-  4. `conversations`: Thread metadata.
-  5. `messages`: Conversational transcripts associated with thread IDs.
+### 2.1 Memory & Conversation Persistence (Retaining LangGraph Backends)
+* **Short-Term Memory / Checkpointing:** We will continue to use LangGraph's native [PostgresSaver](file:///c:/Fine%20Tuning/code/app/db/lifespan.py#L19) checkpointer. This avoids the need to build a manual SQL table and migration pipeline for message history. State serialization and restoration are handled out-of-the-box.
+* **Long-Term Memory / Fact Store:** We will continue to use LangGraph's native [PostgresStore](file:///c:/Fine%20Tuning/code/app/db/lifespan.py#L20) to manage semantic keys (patient facts/emotions) per patient under namespace partitions, avoiding manual database tables for memory items.
 
 ### 2.2 Simplified State definition
-Only the following items will be tracked in [AgentState](file:///c:/Fine%20Tuning/code/app/agent/state.py):
+To keep the checkpoint query in [conversation_service.py](file:///c:/Fine%20Tuning/code/app/services/conversation_service.py) functioning cleanly, the state will be simplified but will retain key summary fields needed by the sidebar:
 * `patient_id` (str)
 * `ocr_context` (str)
 * `tool_call_count` (int)
 * `messages` (List of messages, managed automatically by LangGraph `add_messages`)
+* `raw_input` (str) - The user's raw query (needed for the sidebar title).
+* `final_response` (str) - The final response text (used to filter completed turns).
+* `detected_lang` (str) - Optional metadata for language detection UI tags.
+* `needs_rag` (bool) - Meta tag indicating if vector retrieval was used.
+* `retrieval_decision` (str) - Meta tag indicating correctness status.
+* `retrieved_docs` (list) - Meta list of sources for transparency.
+
+### 2.3 Simplified Authentication Flow
+* **Standard Register/Login:** Users register with basic parameters (`username`, `email`, `password`, `full_name`). Login returns a direct access token (JWT) valid for a medium-to-long period (e.g. 7 days).
+* **Remove Opaque Refresh Tokens:** Delete the `RefreshToken` database model and `/auth/refresh` endpoint. Session longevity is handled purely via the medium-term JWT expiration.
+* **Basic Password Hashing:** Use standard fast hashing (such as standard sha256 or basic bcrypt) to avoid the high local CPU processing overhead of Argon2 hashing during development testing.
+* **Drop Extra Validation Code:** Remove password complexity checkers (e.g. upper/special character requirements) in favor of a simple minimum-length constraint (e.g., minimum 6 characters). Remove email confirmation and token-version check loops.
 
 ---
 
@@ -89,9 +102,10 @@ Only the following items will be tracked in [AgentState](file:///c:/Fine%20Tunin
 2. **Multimodal Ingestion:** Extract text from base64-encoded prescriptions or medical reports using OCR prior to starting the chat session.
 3. **Persistent Patient Memory:** 
    * Retrieve past medical facts (e.g. chronic conditions, medication allergies) when starting a conversation.
-   * Save newly confirmed patient facts (symptom, onset, status) to PostgreSQL.
+   * Save newly confirmed patient facts (symptom, onset, status) to the PostgresStore.
 4. **Clinical Information Retrieval (RAG):** Access evidence-based medical databases (Qdrant) or fall back to external web search when querying general medical knowledge.
 5. **Holistic Response Generation:** Produce diagnosis summaries with holistic recommendation sections (medicines, Pakistani diet, exercise, and warnings on when to see a doctor).
+6. **Basic Authenticated Sessions:** Support basic login/registration to tie patients to their persistent patient facts stored in the PostgresStore.
 
 ### 3.2 Non-Functional Requirements (NFRs)
 1. **Performance/Latency:** Average response time must be under 5 seconds on local hardware. Removing external API translation nodes and grammar validation constraints directly supports this.
@@ -117,8 +131,14 @@ Before starting implementation, the refactoring will follow this sequence:
 * Update the system prompt in [agent_node.py](file:///c:/Fine%20Tuning/code/app/agent/nodes/agent_node.py) to explicitly prompt for multilingual Urdu/English dialogue.
 * Replace the `LlamaGrammar` validation with a clean JSON regex parser / Pydantic validation fallback. Let the LLM output standard JSON strings natively.
 
-### Phase 4: Database Checkpointer Consolidation
-* Simplify how conversation histories are retrieved and displayed in [agent_service.py](file:///c:/Fine%20Tuning/code/app/services/agent_service.py) by reading directly from conversation checkpoint tables.
+### Phase 4: Persistence Integration
+* Ensure [agent_service.py](file:///c:/Fine%20Tuning/code/app/services/agent_service.py) continues to call the compiled LangGraph with the existing `PostgresSaver` checkpointer and `PostgresStore` instance.
+* Update state attributes mapping at the end of the graph turn so the sidebar checkpoint loader in [conversation_service.py](file:///c:/Fine%20Tuning/code/app/services/conversation_service.py) remains fully compatible.
+
+### Phase 5: Authentication Simplification
+* Refactor [auth.py](file:///c:/Fine%20Tuning/code/app/api/auth.py) to remove the forgot-password, reset-password, change-password, verify-email, and refresh-token endpoints.
+* Delete the `RefreshToken` database model and corresponding database tables.
+* Replace Argon2 hashing with basic standard bcrypt hashing in [security.py](file:///c:/Fine%20Tuning/code/app/core/security.py) and remove [password_policy.py](file:///c:/Fine%20Tuning/code/app/core/password_policy.py) validations.
 
 ---
 
@@ -126,6 +146,8 @@ Before starting implementation, the refactoring will follow this sequence:
 
 To ensure the simplified architecture is fully correct, we will run the following checks:
 1. **Validation Tests:** Run mock queries in English, Urdu, and mixed Roman-Urdu to verify that translation-free direct prompting yields correct Urdu output.
-2. **Memory Save/Fetch Checks:** Verify that symptoms are stored correctly in the Postgres `patient_facts` tables and fetched during subsequent sessions.
+2. **Memory Save/Fetch Checks:** Verify that symptoms are stored correctly in the PostgresStore `patient_facts` namespace and fetched during subsequent sessions.
 3. **OCR Context Propagation:** Verify that OCR'd text extracted at the API layer is correctly integrated into the prompt context and answered by the LLM.
 4. **Latency Comparison:** Log and contrast completion times between the original 5-node graph structure and the new simplified workflow.
+5. **Basic Session Verification:** Register a new user, log in, retrieve the JWT access token, and verify that the token can successfully authorize queries to `/agent/invoke` and thread loads.
+

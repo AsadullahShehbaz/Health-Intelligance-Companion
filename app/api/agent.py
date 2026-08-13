@@ -10,6 +10,7 @@ from app.schemas.agent import (
     ConversationDetail,
     ConversationMeta,
 )
+from app.core.rag.ocr import extract_text_from_base64
 from app.services.agent_service import run_agent
 from app.services.conversation_service import get_conversation, list_conversations
 
@@ -19,7 +20,10 @@ router = APIRouter(prefix="/agent", tags=["Agent"])
 @router.post("/invoke", response_model=AgentResponse)
 async def invoke(req: AgentRequest):
     try:
-        return await run_agent(req)
+        ocr_text = ""
+        if req.image_base64:
+            ocr_text = extract_text_from_base64(req.image_base64)
+        return await run_agent(req, ocr_text)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

@@ -15,13 +15,11 @@ logger = get_logger(__name__)
 agent = build_health_agent()
 
 
-def _build_initial_state(req: AgentRequest) -> dict:
+def _build_initial_state(req: AgentRequest, ocr_text: str = "") -> dict:
     return {
         "patient_id": req.patient_id,
         "raw_input": req.query,
-        "has_image": req.image_base64 is not None,
-        "image_base64": req.image_base64,
-        "ocr_context": "",
+        "ocr_context": ocr_text,
         "detected_lang": "",
         "english_query": "",
         "answer": "",
@@ -46,8 +44,8 @@ _MAX_DB_RETRIES = 2
 _RETRY_DELAY_SECONDS = 0.5
 
 
-async def run_agent(req: AgentRequest) -> AgentResponse:
-    initial_state = _build_initial_state(req)
+async def run_agent(req: AgentRequest, ocr_text: str = "") -> AgentResponse:
+    initial_state = _build_initial_state(req, ocr_text)
     # One thread per conversation. Defaults to patient_id so older clients
     # (and pre-sidebar data) keep resuming the single per-patient thread.
     thread_id = req.thread_id or req.patient_id
