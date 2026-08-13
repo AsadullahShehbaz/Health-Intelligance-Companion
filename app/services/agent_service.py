@@ -24,15 +24,15 @@ def _build_initial_state(req: AgentRequest) -> dict:
         "ocr_context": "",
         "detected_lang": "",
         "english_query": "",
-        "rewritten_query": "",
-        "needs_rag": False,
-        "save_memory": False,
-        "retrieved_docs": [],
-        "retrieval_decision": "",
-        "recent_memory": [],
-        "patient_facts": [],
         "answer": "",
         "final_response": "",
+        "needs_rag": False,
+        "retrieval_decision": "",
+        "retrieved_docs": [],
+        "saved_memory": False,
+        "messages": [],
+        "tool_results": "",
+        "tool_call_count": 0,
     }
 
 
@@ -51,7 +51,10 @@ async def run_agent(req: AgentRequest) -> AgentResponse:
     # One thread per conversation. Defaults to patient_id so older clients
     # (and pre-sidebar data) keep resuming the single per-patient thread.
     thread_id = req.thread_id or req.patient_id
-    config = {"configurable": {"thread_id": thread_id}}
+    # recursion_limit is LangGraph's own graph-level safety net, on top of
+    # MAX_TOOL_CALLS inside the agent node — belt and suspenders against a
+    # tool loop that never calls final_answer.
+    config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 15}
 
     for attempt in range(_MAX_DB_RETRIES + 1):
         try:
@@ -75,8 +78,11 @@ async def run_agent(req: AgentRequest) -> AgentResponse:
     return AgentResponse(
         answer=result["final_response"],
         detected_lang=result["detected_lang"],
-        needs_rag=result["needs_rag"],
+        needs_rag=result.get("needs_rag", False),
         retrieval_decision=result.get("retrieval_decision") or None,
-        sources=[d["source"] for d in result.get("retrieved_docs", [])[:3]],
-        save_memory=result["save_memory"],
+        sources=[d.get("source") for d in result.get("retrieved_docs", [])[:3] if d.get("source")],
+        # Per-turn: agent_node sets this from THIS turn's tool messages. Scanning
+        # the whole thread's tool_calls leaked "Saved" onto every later turn of
+        # a resumed conversation.
+        save_memory=result.get("saved_memory", False),
     )

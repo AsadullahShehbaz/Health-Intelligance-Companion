@@ -15,7 +15,7 @@ import time
 
 import psycopg
 
-from app.db.checkpointer import checkpointer
+from app.db.lifespan import checkpointer
 
 # A turn is "complete" once its final_response is set. The graph writes an
 # intermediate checkpoint after every superstep, but those carry an empty

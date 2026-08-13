@@ -7,7 +7,8 @@
       "Bash(C:/miniconda3/envs/ft-project/python.exe -c 'import langgraph.checkpoint.postgres as p; print\\(p.__file__\\)')",
       "Bash(C:/miniconda3/envs/ft-project/python.exe -c 'import langgraph; print\\('\\\\''langgraph'\\\\'', langgraph.__version__\\)')",
       "Bash(C:/miniconda3/envs/ft-project/python.exe -c 'import inspect; from langgraph.checkpoint.postgres import PostgresSaver; print\\('\\\\''init:'\\\\'', inspect.signature\\(PostgresSaver.__init__\\)\\); print\\('\\\\''from_conn_string:'\\\\'', inspect.signature\\(PostgresSaver.from_conn_string\\)\\)')",
-      "Bash($PY *)"
+      "Bash($PY *)",
+      "PowerShell(& \"C:\\\\miniconda3\\\\envs\\\\ft-project\\\\python.exe\" \"C:\\\\Users\\\\jason\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\week6_graph_check.py\")"
     ]
   }
 }

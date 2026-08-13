@@ -16,6 +16,8 @@ import base64
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root, so `import app` works
+
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -37,18 +39,21 @@ print(f"Extracted {len(ocr_text)} chars:")
 print(ocr_text[:2000] if ocr_text else "(no text extracted)")
 print("=" * 60)
 
-client = TestClient(app)
+# Entering the context manager runs the FastAPI lifespan, which sets up the
+# LangGraph checkpointer/store tables (deferred from import time since Week 6
+# moved them into app/db/lifespan.py) plus init_models/embedder.
+with TestClient(app) as client:
 
-print(f"Posting to /agent/invoke | query={QUERY!r} | image_bytes={len(image_b64)}")
-response = client.post(
-    "/agent/invoke",
-    json={
-        "patient_id": "test-ocr-patient",
-        "query": QUERY,
-        "thread_id": "test-ocr-conversation",
-        "image_base64": image_b64,
-    },
-)
+    print(f"Posting to /agent/invoke | query={QUERY!r} | image_bytes={len(image_b64)}")
+    response = client.post(
+        "/agent/invoke",
+        json={
+            "patient_id": "test-ocr-patient",
+            "query": QUERY,
+            "thread_id": "test-ocr-conversation",
+            "image_base64": image_b64,
+        },
+    )
 
 print("Status:", response.status_code)
 print("=" * 60)

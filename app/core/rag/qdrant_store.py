@@ -67,7 +67,8 @@ def retrieve(
 
     # Retry transient network errors (autosuspend wake, throttling). If the
     # cluster is genuinely down this re-raises after the last attempt and the
-    # caller (rag_node) degrades gracefully instead of killing the agent.
+    # calling tool (retrieve_medical_knowledge) degrades gracefully instead of
+    # killing the agent.
     for attempt in range(_QDRANT_RETRIES + 1):
         try:
             results = client.query_points(

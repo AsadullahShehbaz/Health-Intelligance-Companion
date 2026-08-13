@@ -84,6 +84,11 @@ def build_langgraph_pool() -> ConnectionPool:
             "keepalives_interval": 15,
             "keepalives_count": 3,
         },
+        # psycopg_pool's default checkout timeout (30s) is shorter than the
+        # per-connect timeout above, so the first checkout during a slow Neon
+        # wake would fail before the connect does. Let a checkout wait out the
+        # full wake instead of giving up early.
+        timeout=90,
         min_size=1,
         max_size=5,
         # Recycle proactively rather than reuse a long-stale pooled conn.

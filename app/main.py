@@ -4,8 +4,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.rag.embedder import get_embedder
-from app.api import auth, chat, rag, agent  
+from app.api import auth, chat, rag, agent
 from app.config import settings
+from app.db.lifespan import lifespan as db_lifespan
 from app.db.session import init_models
 from app.utils.logging_config import get_logger
 
@@ -28,14 +29,17 @@ def validate_settings():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
 
-    validate_settings()
-    get_embedder()
-    # app.state.llm = load_llm()
-    # app.state.embedder = load_embedder()      # new
-    # app.state.agent = build_health_agent()    # new
-    await init_models()
+    # DB backends (LangGraph checkpointer + store) must be set up before the
+    # async SQLAlchemy tables and embedder warm-up run.
+    async with db_lifespan(app):
+        validate_settings()
+        get_embedder()
+        # app.state.llm = load_llm()
+        # app.state.embedder = load_embedder()      # new
+        # app.state.agent = build_health_agent()    # new
+        await init_models()
 
-    yield
+        yield
 
 
 app = FastAPI(
