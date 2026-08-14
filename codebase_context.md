@@ -2016,7 +2016,6 @@ def _extract_tool_metadata(tool_messages: list) -> dict:
     extracted: list[str] = []
     rag_used = False
     saved_memory = False
-    decision_text = ""
     sources: list[str] = []
 
     for msg in tool_messages:
@@ -2025,17 +2024,13 @@ def _extract_tool_metadata(tool_messages: list) -> dict:
 
         extracted.append(f"--- Context from tool [{name}] ---\n{content}\n")
 
-        if name == "retrieve_medical_knowledge":
+        if name in ("retrieve_medical_knowledge", "search_web_medical"):
             rag_used = True
+            # Parse source titles from formatted tool outputs
             for line in content.splitlines():
-                if "Retrieval decision" in line:
-                    match = re.search(r"Retrieval decision:\s*([A-Za-z]+)", line)
-                    if match:
-                        decision_text = match.group(1)
-                else:
-                    match = re.match(r"^\s*\[([^\]]+)\]", line)
-                    if match:
-                        sources.append(match.group(1))
+                match = re.match(r"^\s*\[([^\]]+)\]", line)
+                if match:
+                    sources.append(match.group(1))
 
         if name in ("save_patient_fact", "save_emotional_state"):
             saved_memory = True
@@ -2043,7 +2038,7 @@ def _extract_tool_metadata(tool_messages: list) -> dict:
     return {
         "tool_results": "\n".join(extracted),
         "needs_rag": rag_used,
-        "retrieval_decision": decision_text or ("retrieved" if rag_used else ""),
+        "retrieval_decision": "retrieved" if rag_used else "",
         "retrieved_docs": [{"source": s} for s in sources[:3]],
         "saved_memory": saved_memory,
     }
@@ -2176,7 +2171,8 @@ from datetime import date
 from langchain_core.tools import tool
 
 from app.db.lifespan import store
-from app.core.rag.corrective_rag import corrective_retrieve
+from app.core.rag.rag_tool import perform_direct_rag
+from app.core.rag.corrective_rag import web_search_fallback
 from app.utils.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -2197,7 +2193,9 @@ def fetch_patient_facts(patient_id: str, query: str) -> str:
             logger.info("No patient history found | patient=%s", patient_id)
             return "No relevant patient history found."
         logger.info("✓ Fetched %d patient facts | patient=%s", len(facts), patient_id)
+        
         lines = [f"- {f['symptom']} (onset: {f['onset']}, status: {f['status']})" for f in facts]
+        logger.info(f"Tool output payload: {lines}")
         return "Known patient history:\n" + "\n".join(lines)
     except Exception as e:
         logger.exception("fetch_patient_facts failed")
@@ -2206,21 +2204,15 @@ def fetch_patient_facts(patient_id: str, query: str) -> str:
 
 @tool
 def retrieve_medical_knowledge(query: str) -> str:
-    """Retrieve evidence-based medical knowledge for diagnosis or treatment questions."""
+    """Retrieves relevant medical guidelines, clinical notes, or local health docs from the vector database."""
     logger.info("▶ retrieve_medical_knowledge | query=%s", query[:80])
     try:
-        result = corrective_retrieve(query, top_k=5)
-        docs = result["docs"]
+        docs = perform_direct_rag(query, top_k=5)
         if not docs:
-            logger.info("No documents found | decision=%s", result["decision"])
-            return f"[Retrieval decision: {result['decision']}] No relevant documents found."
-        logger.info(
-            "✓ retrieve_medical_knowledge returned %d docs | decision=%s",
-            len(docs),
-            result["decision"],
-        )
-        lines = [f"[{d['source']}] {d['text'][:400]}" for d in docs[:3]]
-        return f"[Retrieval decision: {result['decision']}]\n\n" + "\n\n".join(lines)
+            return "No relevant internal medical documents found."
+        logger.info("✓ retrieve_medical_knowledge returned %d docs", len(docs))
+        lines = [f"[{d.get('source', 'Medical Knowledge')}]: {d.get('text', '')[:400]}" for d in docs]
+        return "Internal Medical Knowledge Results:\n" + "\n\n".join(lines)
     except Exception as e:
         logger.exception("retrieve_medical_knowledge failed")
         return f"Error retrieving knowledge: {e}"
@@ -2276,7 +2268,22 @@ def save_emotional_state(patient_id: str, emotion: str, intensity: str, trigger:
         return f"Error saving emotion: {e}"
 
 
-TOOLS = [fetch_patient_facts, retrieve_medical_knowledge, save_patient_fact, save_emotional_state]
+@tool
+def search_web_medical(query: str) -> str:
+    """Searches the web via SerpAPI for current health information or external guidelines."""
+    logger.info("▶ search_web_medical | query=%s", query[:80])
+    try:
+        results = web_search_fallback(query)
+        if not results:
+            return "No web search results found."
+        lines = [f"[{r.get('title', 'Web Source')}]: {r.get('text', '')}" for r in results[:3]]
+        return "Web Search Results:\n" + "\n\n".join(lines)
+    except Exception as e:
+        logger.exception("search_web_medical failed")
+        return f"Error executing web search: {e}"
+
+
+TOOLS = [fetch_patient_facts, retrieve_medical_knowledge, save_patient_fact, save_emotional_state, search_web_medical]
 ```
 
 ---
@@ -2325,6 +2332,7 @@ GUIDELINES:
   - Home care or general advice
   - Clear advice on when to consult a doctor
 - Never invent facts outside the provided context.
+- When patient facts (e.g., name, age, history) are retrieved from tools, you MUST explicitly reference them in your final response when answering the user.
 """
 
 
@@ -2350,6 +2358,14 @@ def biomistral_node(state: AgentState) -> dict:
         HumanMessage(content=state["raw_input"]),
     ]
 
+    logger.info(
+        "BioMistral invoked with %d messages | patient=%s",
+        len(messages),
+        state["patient_id"],
+    )
+
+    logger.info(f"BioMistral invoked with messages: {messages}")
+
     start = time.monotonic()
     response = llm.invoke(messages)
     logger.info("✓ BioMistral completed in %.2fs", time.monotonic() - start)
@@ -2367,6 +2383,8 @@ def biomistral_node(state: AgentState) -> dict:
         state["patient_id"],
         len(answer_text),
     )
+
+    logger.info(f"BioMistral produced final answer: {answer_text}")
 
     return {
         "answer": answer_text,
@@ -2410,29 +2428,44 @@ router_llm = ChatGroq(
     temperature=0.0,
 ).bind_tools(TOOLS)
 
-ROUTER_SYSTEM_PROMPT = """You are an intelligent routing agent for a healthcare assistant.
-Your job is to analyze the conversation and call appropriate tools ONLY if required:
-1. Call 'fetch_patient_facts' if the user mentions past history/symptoms.
-2. Call 'retrieve_medical_knowledge' if the user asks a specific medical/health query.
-3. Call 'save_patient_fact' or 'save_emotional_state' if the user reports new symptoms or emotional distress.
+ROUTER_SYSTEM_PROMPT = """You are an expert triage and tool routing agent for a healthcare companion system.
+Your job is to analyze the user's input and call the APPROPRIATE tool(s) based on strict criteria:
 
-If no tools are needed (e.g., greetings, small talk), do NOT call any tools.
-Never call the same tool with the same input more than once in a turn.
+CRITICAL INSTRUCTIONS:
+1. Medical Symptoms/Queries: If the user mentions ANY medical symptom, pain, illness, medication, or medical question (e.g., "headache", "stomach pain", "fever", "medication advice"), you MUST call 'retrieve_medical_knowledge' or 'search_web_medical'.
+2. Patient History Elicitation: If the user asks about past visits, past symptoms, or recorded medical conditions, you MUST call 'fetch_patient_facts'.
+3. Recording Facts: If the user explicitly states new personal health details, diagnosis, age, or symptom onset (e.g., "I have had a headache for 2 days"), you MUST call 'save_patient_fact'.
+4. Emotion/Distress: If the user expresses severe anxiety, fear, or panic, call 'save_emotional_state'.
+
+EXCEPTIONS:
+- ONLY skip calling tools if the message is purely conversational (e.g., "Hello", "Hi", "Thank you", "Who are you?", "Good morning").
+
 Patient ID: {patient_id}
 """
 
+# File: app/agent/nodes/router_node.py
 
 def router_node(state: AgentState) -> dict:
     logger.info("▶ Router Node Started | patient=%s", state["patient_id"])
 
-    system_text = ROUTER_SYSTEM_PROMPT.format(patient_id=state["patient_id"])
-    messages = [SystemMessage(content=system_text)] + list(state.get("messages", []))
-
-    # The current user input is not in history yet at the start of a turn
-    # (the previous turn ended on an assistant message), so append it for
-    # this invocation only. It gets persisted to state below.
-    if not messages or not isinstance(messages[-1], HumanMessage):
-        messages.append(HumanMessage(content=state["raw_input"]))
+    system_msg = SystemMessage(content=ROUTER_SYSTEM_PROMPT.format(patient_id=state["patient_id"]))
+    
+    # Isolate user's current message
+    current_user_text = state.get("raw_input", "")
+    
+    # Build clean message chain for the router model:
+    # 1. System Prompt
+    # 2. Historical messages (if any)
+    # 3. Current Human Message
+    messages = [system_msg]
+    
+    existing_messages = state.get("messages", [])
+    if existing_messages:
+        messages.extend(existing_messages)
+        
+    # Append current input if it's not already the trailing message
+    if not messages or not isinstance(messages[-1], HumanMessage) or messages[-1].content != current_user_text:
+        messages.append(HumanMessage(content=current_user_text))
 
     start = time.monotonic()
     response = router_llm.invoke(messages)
@@ -2440,18 +2473,14 @@ def router_node(state: AgentState) -> dict:
 
     tool_calls = getattr(response, "tool_calls", None)
 
-    # Always persist the user's message so the conversation pair survives in
-    # the checkpoint (add_messages appends; losing the HumanMessage breaks
-    # role alternation for the local model on later turns). The router's own
-    # AIMessage is only stored when it actually carries tool_calls —
-    # otherwise it would be a ghost assistant turn before the real answer.
     if tool_calls:
         names = [tc.get("name", "?") for tc in tool_calls]
-        logger.info("Router requested tools: %s", ", ".join(names))
-        return {"messages": [HumanMessage(content=state["raw_input"]), response]}
+        logger.info("✓ Router successfully selected tools: %s", ", ".join(names))
+        
+        return {"messages": [HumanMessage(content=current_user_text), response]}
 
-    logger.info("Router decided no tools needed → straight to BioMistral")
-    return {"messages": [HumanMessage(content=state["raw_input"])]}
+    logger.info("ℹ Router determined query is purely conversational (no tools needed) → straight to BioMistral")
+    return {"messages": [HumanMessage(content=current_user_text)]}
 
 ```
 
@@ -3291,6 +3320,57 @@ def retrieve(
 
 ---
 
+## File: `app\core\rag\rag_tool.py`
+
+```python
+# app/core/rag/rag_tool.py
+"""Direct RAG tool — streamlined vector retrieval without CRAG evaluation loops."""
+
+import logging
+from typing import List, Dict, Any
+
+from app.core.rag.qdrant_store import retrieve
+
+logger = logging.getLogger(__name__)
+
+
+def perform_direct_rag(query: str, top_k: int = 3) -> List[Dict[str, Any]]:
+    """
+    Executes direct vector retrieval from the local knowledge base without
+    corrective re-ranking or query rewriting loops.
+
+    Args:
+        query: The user's medical/health query.
+        top_k: Number of top documents to retrieve (default 3).
+
+    Returns:
+        List of dictionaries with keys: title, text, score, source.
+    """
+    logger.info("▶ Direct RAG Search | query=%s", query[:80])
+    try:
+        # Use the Qdrant retriever directly
+        docs = retrieve(query, top_k=top_k)
+
+        results = []
+        for doc in docs:
+            results.append({
+                "title": doc.get("source", "Medical Knowledge Base"),
+                "text": doc.get("text", ""),
+                "score": doc.get("score", None),
+                "source": doc.get("source", ""),
+                "category": doc.get("category", "")
+            })
+        
+        logger.info("✓ Direct RAG returned %d documents", len(results))
+        return results
+    except Exception as e:
+        logger.exception("Direct RAG retrieval failed")
+        return []
+
+```
+
+---
+
 ## File: `app\core\rag\translation.py`
 
 ```python
@@ -3410,111 +3490,43 @@ async def lifespan(app: FastAPI):
 ## File: `app\db\pool.py`
 
 ```python
-# app/db/pool.py
-"""
-Shared psycopg ConnectionPool for the LangGraph checkpointer and store.
-
-Both langgraph postgres backends take either a bare psycopg connection or a
-psycopg_pool pool. A bare connection is a live grenade against Neon:
-serverless autosuspend drops idle connections, and with no reconnect path
-the first request after idle dies with
-
-    psycopg.OperationalError: SSL connection has been closed unexpectedly
-
-and stays dead — psycopg marks the closed connection unusable, so every
-subsequent request fails the same way.
-
-A pool fixes it the way the async engine's `pool_pre_ping=True` does: the
-pool's default `check` runs a no-op statement on every checkout, so a stale
-connection is discarded and replaced before it is used.
-
-`autocommit`/`prepare_threshold`/`row_factory` mirror what langgraph's
-`from_conn_string` passes to `Connection.connect` — the saver/store rely on
-those being set. `connect_timeout` and keepalives match the Neon tuning in
-`app/db/session.py`.
-
-The LangGraph connections deliberately use Neon's **direct endpoint**, not
-the `-pooler` (PgBouncer transaction-mode) one that `DATABASE_URL` points at.
-The checkpointer/store hold long-lived connections and rely on server-side
-prepared statements (`prepare_threshold=0`) and binary cursors — a
-transaction-mode pooler is not designed for that and aborts such connections
-(`could not receive data from server: Software caused connection abort`).
-The direct endpoint gives real sessions, which is what langgraph's code
-expects; the pool handles the remaining autosuspend drops.
-"""
-from urllib.parse import urlparse, urlunparse
-
-from psycopg.rows import dict_row
+# File: app/db/pool.py
 from psycopg_pool import ConnectionPool
-
 from app.config import settings
 from app.utils.logging_config import get_logger
 
 logger = get_logger(__name__)
 
-
-def _langgraph_conn_string() -> str:
-    """DATABASE_URL for the LangGraph psycopg connections.
-
-    Two adjustments on top of the asyncpg URL:
-      1. psycopg dialect instead of asyncpg's.
-      2. Use Neon's *direct* endpoint (host without ``-pooler.``) rather than
-         the PgBouncer pooler endpoint — see module docstring. No-op when the
-         host isn't a Neon pooler host.
-    """
-    u = urlparse(settings.DATABASE_URL.replace("postgresql+asyncpg", "postgresql"))
-    host = u.hostname or ""
-    if "-pooler." in host:
-        userinfo = ""
-        if u.username:
-            userinfo = u.username + (f":{u.password}" if u.password else "") + "@"
-        netloc = userinfo + host.replace("-pooler.", ".")
-        if u.port:
-            netloc += f":{u.port}"
-        u = u._replace(netloc=netloc)
-    return urlunparse(u)
-
-
-_conn_string = _langgraph_conn_string()
-logger.info("LangGraph direct connection string resolved | host=%s", urlparse(_conn_string).hostname or "?")
-
+# Convert async/sync SQLAlchemy direct Neon URL to raw psycopg format
+def get_psycopg_conn_string() -> str:
+    conn_str = settings.DATABASE_URL
+    # Replace asyncpg / postgresql+asyncpg schemes if present
+    conn_str = conn_str.replace("postgresql+asyncpg://", "postgres://")
+    conn_str = conn_str.replace("postgresql://", "postgres://")
+    return conn_str
 
 def build_langgraph_pool() -> ConnectionPool:
-    """A process-lifetime pool tuned for Neon serverless Postgres.
-
-    Non-blocking to construct: the pool opens its connections on a
-    background worker, so module import never waits on the DB.
-    """
-    logger.info(
-        "Building psycopg ConnectionPool | min_size=1 | max_size=5 | timeout=90s | max_lifetime=900s",
-    )
+    conn_str = get_psycopg_conn_string()
+    logger.info("Building resilient psycopg ConnectionPool for Neon DB")
+    
     return ConnectionPool(
-        conninfo=_conn_string,
+        conninfo=conn_str,
+        min_size=1,
+        max_size=10,
+        timeout=30.0,            # Wait up to 30s for a connection checkout
+        max_lifetime=300.0,       # Recycle connections every 5 mins to stay ahead of Neon idle timeout
+        max_idle=60.0,            # Close idle connections after 60s
+        reconnect_timeout=30.0,   # Automatically retry reconnecting if Neon is resuming
         kwargs={
-            # Same non-negotiables as langgraph's own from_conn_string().
             "autocommit": True,
             "prepare_threshold": 0,
-            "row_factory": dict_row,
-            # Neon can take several seconds to wake a suspended compute.
-            "connect_timeout": 60,
-            # Detect server-side drops (Neon idle timeout) faster.
+            "connect_timeout": 15,
             "keepalives": 1,
-            "keepalives_idle": 60,
-            "keepalives_interval": 15,
-            "keepalives_count": 3,
+            "keepalives_idle": 30,
+            "keepalives_interval": 10,
+            "keepalives_count": 5,
         },
-        # psycopg_pool's default checkout timeout (30s) is shorter than the
-        # per-connect timeout above, so the first checkout during a slow Neon
-        # wake would fail before the connect does. Let a checkout wait out the
-        # full wake instead of giving up early.
-        timeout=90,
-        min_size=1,
-        max_size=5,
-        # Recycle proactively rather than reuse a long-stale pooled conn.
-        max_lifetime=900,
-        max_idle=300,
     )
-
 ```
 
 ---
@@ -4833,7 +4845,23 @@ logger = get_logger(__name__)
 # Compiled once at import time — reused across requests, same pattern
 # as loading `llm` once in core/llm.py
 agent = build_health_agent()
+# File: app/services/agent_service.py
 
+from psycopg import OperationalError, DatabaseError
+
+logger = get_logger(__name__)
+
+async def execute_graph_with_retry(graph, inputs, config, retries=3, delay=1.5):
+    for attempt in range(1, retries + 1):
+        try:
+            return await graph.ainvoke(inputs, config=config)
+        except (OperationalError, DatabaseError) as db_err:
+            logger.warning(f"⚠️ DB Connection error during graph execution (Attempt {attempt}/{retries}): {db_err}")
+            if attempt == retries:
+                raise db_err
+            await asyncio.sleep(delay * attempt)
+        except Exception as e:
+            raise e
 
 def _build_initial_state(req: AgentRequest, ocr_text: str = "") -> dict:
     return {
@@ -5019,6 +5047,7 @@ real sessions on the direct endpoint.
 import time
 
 import psycopg
+from psycopg.rows import dict_row
 
 from app.db.lifespan import checkpointer
 from app.utils.logging_config import get_logger
@@ -5059,7 +5088,7 @@ _RETRY_DELAY_SECONDS = 0.5
 def _query(sql: str, params: list) -> list[dict]:
     def run() -> list[dict]:
         with checkpointer.conn.connection() as conn:
-            cur = conn.cursor()
+            cur = conn.cursor(row_factory=dict_row)
             cur.execute(sql, params)
             return cur.fetchall()
 

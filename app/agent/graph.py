@@ -39,7 +39,6 @@ def _extract_tool_metadata(tool_messages: list) -> dict:
     extracted: list[str] = []
     rag_used = False
     saved_memory = False
-    decision_text = ""
     sources: list[str] = []
 
     for msg in tool_messages:
@@ -48,17 +47,13 @@ def _extract_tool_metadata(tool_messages: list) -> dict:
 
         extracted.append(f"--- Context from tool [{name}] ---\n{content}\n")
 
-        if name == "retrieve_medical_knowledge":
+        if name in ("retrieve_medical_knowledge", "search_web_medical"):
             rag_used = True
+            # Parse source titles from formatted tool outputs
             for line in content.splitlines():
-                if "Retrieval decision" in line:
-                    match = re.search(r"Retrieval decision:\s*([A-Za-z]+)", line)
-                    if match:
-                        decision_text = match.group(1)
-                else:
-                    match = re.match(r"^\s*\[([^\]]+)\]", line)
-                    if match:
-                        sources.append(match.group(1))
+                match = re.match(r"^\s*\[([^\]]+)\]", line)
+                if match:
+                    sources.append(match.group(1))
 
         if name in ("save_patient_fact", "save_emotional_state"):
             saved_memory = True
@@ -66,7 +61,7 @@ def _extract_tool_metadata(tool_messages: list) -> dict:
     return {
         "tool_results": "\n".join(extracted),
         "needs_rag": rag_used,
-        "retrieval_decision": decision_text or ("retrieved" if rag_used else ""),
+        "retrieval_decision": "retrieved" if rag_used else "",
         "retrieved_docs": [{"source": s} for s in sources[:3]],
         "saved_memory": saved_memory,
     }

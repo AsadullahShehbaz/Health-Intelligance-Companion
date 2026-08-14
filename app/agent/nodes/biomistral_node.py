@@ -39,6 +39,7 @@ GUIDELINES:
   - Home care or general advice
   - Clear advice on when to consult a doctor
 - Never invent facts outside the provided context.
+- When patient facts (e.g., name, age, history) are retrieved from tools, you MUST explicitly reference them in your final response when answering the user.
 """
 
 
@@ -64,6 +65,14 @@ def biomistral_node(state: AgentState) -> dict:
         HumanMessage(content=state["raw_input"]),
     ]
 
+    logger.info(
+        "BioMistral invoked with %d messages | patient=%s",
+        len(messages),
+        state["patient_id"],
+    )
+
+    logger.info(f"BioMistral invoked with messages: {messages}")
+
     start = time.monotonic()
     response = llm.invoke(messages)
     logger.info("✓ BioMistral completed in %.2fs", time.monotonic() - start)
@@ -81,6 +90,8 @@ def biomistral_node(state: AgentState) -> dict:
         state["patient_id"],
         len(answer_text),
     )
+
+    logger.info(f"BioMistral produced final answer: {answer_text}")
 
     return {
         "answer": answer_text,

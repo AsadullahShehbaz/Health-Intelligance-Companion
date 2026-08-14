@@ -14,6 +14,7 @@ real sessions on the direct endpoint.
 import time
 
 import psycopg
+from psycopg.rows import dict_row
 
 from app.db.lifespan import checkpointer
 from app.utils.logging_config import get_logger
@@ -54,7 +55,7 @@ _RETRY_DELAY_SECONDS = 0.5
 def _query(sql: str, params: list) -> list[dict]:
     def run() -> list[dict]:
         with checkpointer.conn.connection() as conn:
-            cur = conn.cursor()
+            cur = conn.cursor(row_factory=dict_row)
             cur.execute(sql, params)
             return cur.fetchall()
 

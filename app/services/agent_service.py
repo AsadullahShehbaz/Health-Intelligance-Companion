@@ -14,7 +14,23 @@ logger = get_logger(__name__)
 # Compiled once at import time — reused across requests, same pattern
 # as loading `llm` once in core/llm.py
 agent = build_health_agent()
+# File: app/services/agent_service.py
 
+from psycopg import OperationalError, DatabaseError
+
+logger = get_logger(__name__)
+
+async def execute_graph_with_retry(graph, inputs, config, retries=3, delay=1.5):
+    for attempt in range(1, retries + 1):
+        try:
+            return await graph.ainvoke(inputs, config=config)
+        except (OperationalError, DatabaseError) as db_err:
+            logger.warning(f"⚠️ DB Connection error during graph execution (Attempt {attempt}/{retries}): {db_err}")
+            if attempt == retries:
+                raise db_err
+            await asyncio.sleep(delay * attempt)
+        except Exception as e:
+            raise e
 
 def _build_initial_state(req: AgentRequest, ocr_text: str = "") -> dict:
     return {
