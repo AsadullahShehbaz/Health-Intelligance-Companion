@@ -21,13 +21,15 @@ def _build_initial_state(req: AgentRequest, ocr_text: str = "") -> dict:
         "patient_id": req.patient_id,
         "raw_input": req.query,
         "ocr_context": ocr_text,
+        "answer": "",
         "final_response": "",
         "detected_lang": "",
         "needs_rag": False,
         "retrieval_decision": "",
         "retrieved_docs": [],
+        "saved_memory": False,
+        "tool_results": "",
         "messages": [],
-        "tool_call_count": 0,
     }
 
 
@@ -54,9 +56,10 @@ async def run_agent(
     # (and pre-sidebar data) keep resuming the single per-patient thread.
     thread_id = req.thread_id or req.patient_id
 
-    # recursion_limit is LangGraph's own graph-level safety net, on top of
-    # MAX_TOOL_CALLS inside the agent node — belt and suspenders against a
-    # tool loop that never calls final_answer.
+    # recursion_limit is LangGraph's own graph-level safety net. The
+    # decoupled pipeline is linear (router -> tools? -> biomistral -> END),
+    # so it stays well under this, but the cap guards against any future
+    # cyclic edge misbehaving.
     config = {
         "configurable": {
             "thread_id": thread_id,

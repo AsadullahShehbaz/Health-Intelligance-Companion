@@ -1,30 +1,7 @@
 # app/schemas/agent.py
-from pydantic import BaseModel, Field
-from typing import Optional, Literal
+from typing import Optional
 
-
-class ToolCall(BaseModel):
-    """Grammar-constrained agent decision."""
-    thought: str = Field(..., description="Brief reasoning for this step")
-    action: Literal[
-        "fetch_patient_facts",
-        "retrieve_medical_knowledge",
-        "save_patient_fact",
-        "save_emotional_state",
-        "final_answer",
-    ]
-    action_input: dict = Field(default_factory=dict)
-    # Required (no Optional, no default null) so the model can no longer
-    # emit "answer": null and skip past our checks. It can still emit ""
-    # (an empty string) on a bad generation — we deliberately do NOT add a
-    # strict min_length here, because that would make pydantic raise a
-    # ValidationError on empty text, which just swaps one generic fallback
-    # for another. Instead, agent_node.py checks for blank/short answers
-    # itself and does something more useful about it (see agent_node.py).
-    answer: str = Field(
-        default="",
-        description="For final_answer: the full reply text. For any tool action: a short one-line note on why you're calling it.",
-    )
+from pydantic import BaseModel
 
 
 class AgentRequest(BaseModel):

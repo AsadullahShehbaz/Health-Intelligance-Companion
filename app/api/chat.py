@@ -21,7 +21,12 @@ async def stream(req: ChatRequest):
         message.model_dump()
         for message in req.messages
     ]
-    logger.info(f"Received chat request with {len(messages)} messages.\n Message : {messages}")
+    logger.info(
+        "▶ POST /chat/stream | messages=%d | temperature=%.2f | max_tokens=%d",
+        len(messages),
+        req.temperature,
+        req.max_tokens,
+    )
     return StreamingResponse(
         stream_chat(
             messages=messages,

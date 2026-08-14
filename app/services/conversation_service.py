@@ -16,6 +16,9 @@ import time
 import psycopg
 
 from app.db.lifespan import checkpointer
+from app.utils.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 # A turn is "complete" once its final_response is set. The graph writes an
 # intermediate checkpoint after every superstep, but those carry an empty
@@ -60,12 +63,27 @@ def _query(sql: str, params: list) -> list[dict]:
             return run()
         except psycopg.OperationalError:
             if attempt >= _MAX_DB_RETRIES:
+                logger.exception(
+                    "Checkpoint query failed after %d attempts | params=%s",
+                    attempt + 1,
+                    params,
+                )
                 raise
+            logger.warning(
+                "Transient DB error in checkpoint query (attempt %d/%d), retrying...",
+                attempt + 1,
+                _MAX_DB_RETRIES + 1,
+            )
             time.sleep(_RETRY_DELAY_SECONDS)
 
 
 def _fetch_turns(patient_id: str, thread_id: str | None = None) -> list[dict]:
     """Chronological turn-end checkpoints for a patient, optionally one thread."""
+    logger.info(
+        "Fetching turns | patient=%s | thread=%s",
+        patient_id,
+        thread_id or "(all)",
+    )
     sql = (
         f"SELECT {_TURN_FIELDS}"
         f" FROM checkpoints WHERE {_TURN_END}"
@@ -76,7 +94,9 @@ def _fetch_turns(patient_id: str, thread_id: str | None = None) -> list[dict]:
         sql += " AND thread_id = %s"
         params.append(thread_id)
     sql += " ORDER BY thread_id ASC, checkpoint_id ASC"
-    return _query(sql, params)
+    turns = _query(sql, params)
+    logger.info("Fetched %d turns | patient=%s", len(turns), patient_id)
+    return turns
 
 
 def _title(turns: list[dict]) -> str:
@@ -97,6 +117,7 @@ def _sources(turn: dict) -> list[str]:
 
 def list_conversations(patient_id: str) -> list[dict]:
     """Sidebar rows: every conversation the patient has started, newest first."""
+    start = time.monotonic()
     grouped: dict[str, list[dict]] = {}
     for t in _fetch_turns(patient_id):
         grouped.setdefault(t["thread_id"], []).append(t)
@@ -118,14 +139,27 @@ def list_conversations(patient_id: str) -> list[dict]:
     # ISO timestamps come from the same source (checkpoint ts), so a plain
     # lexicographic sort is a valid time order.
     conversations.sort(key=lambda c: c["updated_at"], reverse=True)
+    logger.info(
+        "✓ list_conversations grouped %d turns into %d conversations in %.2fs | patient=%s",
+        sum(len(v) for v in grouped.values()),
+        len(conversations),
+        time.monotonic() - start,
+        patient_id,
+    )
     return conversations
 
 
 def get_conversation(thread_id: str, patient_id: str) -> dict | None:
     """Full message transcript for one thread, or None if it isn't the
     patient's (ownership is enforced by the patient_id inside the state)."""
+    start = time.monotonic()
     turns = _fetch_turns(patient_id, thread_id)
     if not turns:
+        logger.info(
+            "No turns found | thread=%s | patient=%s",
+            thread_id,
+            patient_id,
+        )
         return None
 
     messages = []
@@ -149,10 +183,18 @@ def get_conversation(thread_id: str, patient_id: str) -> dict | None:
             }
         )
 
-    return {
+    result = {
         "thread_id": thread_id,
         "patient_id": patient_id,
         "title": _title(turns),
         "updated_at": turns[-1]["ts"] or "",
         "messages": messages,
     }
+    logger.info(
+        "✓ get_conversation built %d messages from %d turns in %.2fs | thread=%s",
+        len(messages),
+        len(turns),
+        time.monotonic() - start,
+        thread_id,
+    )
+    return result

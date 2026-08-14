@@ -36,6 +36,9 @@ from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
 from app.config import settings
+from app.utils.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 def _langgraph_conn_string() -> str:
@@ -61,6 +64,7 @@ def _langgraph_conn_string() -> str:
 
 
 _conn_string = _langgraph_conn_string()
+logger.info("LangGraph direct connection string resolved | host=%s", urlparse(_conn_string).hostname or "?")
 
 
 def build_langgraph_pool() -> ConnectionPool:
@@ -69,6 +73,9 @@ def build_langgraph_pool() -> ConnectionPool:
     Non-blocking to construct: the pool opens its connections on a
     background worker, so module import never waits on the DB.
     """
+    logger.info(
+        "Building psycopg ConnectionPool | min_size=1 | max_size=5 | timeout=90s | max_lifetime=900s",
+    )
     return ConnectionPool(
         conninfo=_conn_string,
         kwargs={

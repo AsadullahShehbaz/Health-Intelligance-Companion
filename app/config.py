@@ -18,7 +18,9 @@ class Settings(BaseSettings):
     VERIFY_TOKEN_EXPIRE_HOURS: int = 48            # email-verify token TTL
 
     # ── Model & CORS (sensible dev defaults) ──────────────────────────────
-    MODEL_PATH: str = r"C:\Users\jason\.cache\models\biomistral-Q4_K_M.gguf"
+    LLM_MODEL: str = r"C:\Users\jason\.cache\models\biomistral-Q4_K_M.gguf"
+    LLM_BASE_URL: str = "http://127.0.0.1:8080/v1"
+    LLM_API_KEY: str = "api-key"
     CORS_ORIGINS: list[str] = ["http://localhost:5173"]
 
     # ── Email / SMTP (leave unset for dev — emails are logged to console) ─
@@ -31,6 +33,7 @@ class Settings(BaseSettings):
 
     SERP_API_KEY : str
     GROQ_API_KEY : str
+    GROQ_MODEL: str = "llama-3.3-70b-versatile"  # fast & reliable free tool-calling model
     model_config = ConfigDict(env_file=".env", extra="ignore")
 
 

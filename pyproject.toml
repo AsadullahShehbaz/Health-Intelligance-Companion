@@ -1,0 +1,10 @@
+[tool.coverage.run]
+source = ["app"]
+omit = [
+    "app/tests/*",
+    "app/eval/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false

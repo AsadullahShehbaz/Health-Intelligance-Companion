@@ -5,15 +5,15 @@ to the console instead of being sent.  Once SMTP_* vars are set in .env the
 real sender activates automatically.
 """
 
-import logging
 import smtplib
 import ssl
 from email.message import EmailMessage
 from typing import Optional
 
 from app.config import settings
+from app.utils.logging_config import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def send_email(
@@ -35,6 +35,8 @@ def send_email(
             body,
         )
         return True
+
+    logger.info("Sending email | to=%s | subject=%s", to, subject)
 
     msg = EmailMessage()
     msg["From"] = settings.SMTP_FROM or settings.SMTP_USER

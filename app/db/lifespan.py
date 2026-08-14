@@ -20,20 +20,29 @@ from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.store.postgres import PostgresStore
 
 from app.db.pool import build_langgraph_pool
+from app.utils.logging_config import get_logger
 
+logger = get_logger(__name__)
+
+logger.info("Building LangGraph Postgres pools...")
 _checkpointer_pool = build_langgraph_pool()
 checkpointer = PostgresSaver(_checkpointer_pool)
 
 _store_pool = build_langgraph_pool()
 store = PostgresStore(_store_pool)
+logger.info("LangGraph checkpointer and store initialised.")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    logger.info("▶ Setting up LangGraph DB tables...")
     checkpointer.setup()  # creates checkpoint tables on first run, no-ops after
     store.setup()         # creates store tables on first run, no-ops after
+    logger.info("✓ LangGraph DB tables ready (checkpointer + store).")
     try:
         yield
     finally:
+        logger.info("■ Closing LangGraph connection pools...")
         _checkpointer_pool.close()
         _store_pool.close()
+        logger.info("✓ LangGraph connection pools closed.")

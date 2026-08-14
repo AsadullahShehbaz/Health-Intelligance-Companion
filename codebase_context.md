@@ -1,112 +1,5 @@
 # Codebase Context
 
-## File: `CLAUDE.md`
-
-```markdown
-# CLAUDE.md
-
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
-## Project overview
-
-
-**Health Intelligence Companion** — a full-stack medical Q&A app with user auth. Two parts, run independently:
-
-- **Backend** (`app/`): FastAPI + async SQLAlchemy (asyncpg → Neon Postgres), token-based auth, and local LLM inference via `llama-cpp-python` (BioMistral-7B GGUF). Serves the chat stream at `/chat/stream`, a Corrective-RAG stream at `/rag/stream`, a LangGraph agent at `/agent/invoke`, and the auth API under `/auth`.
-- **Frontend** (`frontend/`): React 19 + Vite 8 + Tailwind 4. Auth wire-up via localStorage JWT; chat via streaming `fetch`.
-
-## Environment
-
-- Backend Python runs in the **conda env `ft-project`** (`C:\miniconda3\envs\ft-project`). Dependencies are pinned in `requirements.txt` — install with `conda activate ft-project && pip install -r requirements.txt`.
-- All secrets live in root `.env` (gitignored): `DATABASE_URL` (Neon/Postgres), `SECRET_KEY`, `QDRANT_URL`, `QDRANT_API_KEY`, `GROQ_API_KEY`, `HF_TOKEN`, plus dev username/password. Do **not** commit or echo these values. `app/config.py` reads them via `pydantic-settings`.
-
-## Commands
-
-```bash
-# Backend (from repo root, conda env ft-project), port 8000
-uvicorn app.main:app --reload
-
-# Frontend (from frontend/), port 5173  — hardcoded API base http://localhost:8000
-npm run dev
-npm run build
-npm run lint   # ESLint (frontend only)
-```
-
-There is **no backend linter configured** and no pytest integration (`pytest`/`httpx` are not in `requirements.txt`). `app/tests/*.py` are standalone scripts, not a pytest suite — run them directly against a live backend (they hit real Qdrant/LLM): `conda activate ft-project && python app/tests/test_qdrant.py`. `app/tests/test-ocr.py` posts `app/tests/sample-report.png` through `/agent/invoke` (`image_base64` + a query, default `"what it mean"`) and prints the OCR'd text plus the answer — the quickest way to exercise the OCR/rewriter/reasoner path end-to-end. `app/db/session.py:init_models` creates tables directly from the SQLAlchemy models on startup via `Base.metadata.create_all` — there are **no Alembic migrations in use** (alembic is in `requirements.txt` but the code path is unused).
-
-## Backend architecture
-
-FastAPI app assembled in `app/main.py`: registers `auth`, `chat`, `rag` (streaming RAG), and `agent` (LangGraph) routers, adds CORS (default `http://localhost:5173`), and on startup (`lifespan`) runs `validate_settings()` then `get_embedder()` then `await init_models()`.
-
-`app/config.py` `Settings` covers everything `main.py:validate_settings` reads (`DATABASE_URL`, `SECRET_KEY`, `QDRANT_URL`, `GROQ_API_KEY`, …) plus `SERP_API_KEY` (SerpAPI web-search fallback in `corrective_rag.py`) and `MODEL_PATH` — the only two with defaults are `MODEL_PATH` and `CORS_ORIGINS`.
-
-Layered layout: `api/` (routers) → `schemas/` (Pydantic request/response) → `services/` (business logic) → `models/` (SQLAlchemy) + `core/` (security, password policy, LLM, rag) + `utils/` (email, logging). `deps.py` provides auth dependencies.
-
-### Streaming chat (the non-obvious part)
-
-`app/core/llm.py` loads the GGUF model **at import time** (module-level `llm = Llama(model_path=settings.MODEL_PATH, n_ctx=2048, n_threads=os.cpu_count(), n_batch=512)`). This is blocking and expensive — it happens when the app starts, so server startup is slow, and `llama_cpp`'s API is synchronous. `n_threads`/`n_batch` fixed the multi-minute latency that came from the old default threads, but node latency is still tens of seconds: the grammar-constrained nodes (`router`, `extract_facts`) and 7B-on-CPU inference are the bottleneck — expect that during debug, not single digits.
-
-`app/services/chat_service.py:stream_chat` bridges that sync generator to async: it runs a producer in a **thread executor** (`loop.run_in_executor`) that pushes each content delta into an `asyncio.Queue` via `loop.call_soon_threadsafe`, and the async consumer yields items. Sentinels/exception objects are pushed through the same queue to signal completion/errors. Keep the blocking LLM call off the event loop — do not call `llm.create_chat_completion` directly from an async route.
-
-### RAG (`/rag`) — Corrective RAG
-
-`app/services/rag_chat_service.py:stream_rag_chat` mirrors the streaming bridge above but prepends a retrieval step in the producer: it takes the last user message, runs `app/core/rag/corrective_rag.py:corrective_retrieve`, builds an augmented prompt via `_build_prompt` (inlines up to 3 doc texts, truncated to 300 chars each), and replaces the final user turn with that augmented prompt before calling `llm.create_chat_completion`. Same queue/sentinel mechanics as the plain chat stream.
-
-`corrective_retrieve(query, top_k=5)` is a three-stage Corrective RAG pipeline:
-1. **Retrieve** from Qdrant via `qdrant_store.retrieve` — embeds the query with a singleton `SentenceTransformer` (`all-MiniLM-L6-v2`, loaded once via `get_embedder()`), queries the `health_knowledge` collection (`score_threshold=0.3`, optional `category` payload filter), and returns docs with `text`/`source`/`category`/`score`.
-2. **Evaluate** via `evaluate_relevance` — classifies retrieval as `correct` / `ambiguous` / `incorrect` from score thresholds (`RELEVANCE_THRESHOLD=0.5` on max score, `AMBIGUOUS_THRESHOLD=0.35` on avg score).
-3. **Correct** — on `incorrect` it **replaces** the context with SerpAPI Google results (prepended) + retrieved docs; on `ambiguous` it **augments** (appended). Returns the top-5 docs, `decision`, and average score.
-
-The `rag` router (`app/api/rag.py`) is registered in `app/main.py`, so `/rag/stream` is live. `app/core/rag/qdrant_store.py` instantiates the `QdrantClient` and `embedder` **at import time** (module-level), so importing it at app startup blocks on a live Qdrant connection and model load. **Resilience:** Qdrant Cloud free tier autosuspends an idle cluster (the first query has to wake it and can blow past the default read timeout), so `qdrant_store.py` sets `timeout=60` on the client and retries `query_points` once on a transient error — the same wake-up-retry pattern as the Neon retries in `agent_service.py`. The agent's `rag_node` additionally catches any retrieval/web-search failure and continues with `retrieval_decision="failed"` and empty docs, so a dead RAG backend degrades the agent to answering from `ocr_context`/facts instead of killing the whole turn.
-
-### Agent (`/agent/invoke`) — LangGraph health assistant
-
-A multi-node LangGraph pipeline (`app/agent/`) that wraps the RAG + LLM stack into one flow with automatic conversation memory and persistent per-patient fact storage. It is the newer, preferred path over the plain `/chat/stream` and `/rag/stream` endpoints — extend it rather than adding new chat endpoints.
-
-- **Graph** (`app/agent/graph.py`): `build_health_agent()` compiles a `StateGraph(AgentState)` in this order: `ocr` → `translate_in` → `router` → `fetch_facts` → (conditional) `rewrite` → `rag` → `reasoner` → `extract_facts` → `translate_out` → END. After `fetch_facts`, routing to `rewrite` vs `reasoner` depends on the router's `needs_rag` flag.
-- **State** (`app/agent/state.py`): `AgentState` is a `TypedDict` carrying `raw_input`, `detected_lang`/`english_query`, `needs_rag`/`save_memory`, `retrieved_docs`, `patient_facts`, `answer`, `final_response`, etc.
-- **Structured output via grammar**: the `router` and `extract_facts` nodes compile a Pydantic schema (`RouterDecision`, `SymptomFact` in `app/schemas/agent.py`) into a llama.cpp grammar (`LlamaGrammar.from_json_schema`) so the model **cannot** emit output that fails validation. The `router` node validates and falls back to a safe default (`needs_rag=True, save_memory=True`) on parse failure.
-- **Checkpointer** (`app/db/checkpointer.py`): LangGraph `PostgresSaver` persists the full `AgentState` per `thread_id`, giving free conversation continuity — no manual memory queries. **Important**: it uses psycopg, so it rewrites `postgresql+asyncpg` → `postgresql` on `DATABASE_URL`, **and it connects to Neon's *direct* endpoint, not the `-pooler` (PgBouncer transaction-mode) one** — the saver holds long-lived connections and uses server-side prepared statements (`prepare_threshold=0`) + binary cursors, which a transaction-mode pooler aborts (`Software caused connection abort`); the direct endpoint gives real sessions. Both it and `app/db/store.py` are module-level singletons with idempotent `.setup()` on import. Both are built on a **`psycopg_pool.ConnectionPool`** (shared builder `app/db/pool.py`), not a bare connection: Neon autosuspend drops idle connections, and a bare psycopg conn has no reconnect path — the first request after idle dies with `SSL connection has been closed unexpectedly`. The pool's default `check` pings every checkout (the sync analogue of the async engine's `pool_pre_ping=True`) and reconnects. `run_agent` additionally retries a transient `psycopg.OperationalError` (Neon compute-wake race). If a `psycopg.OperationalError` reappears, suspect the pool was bypassed or the endpoint reverted to the pooler.
-- **Fact memory** (`app/db/store.py`): LangGraph `PostgresStore` keeps symptom facts under namespace `("patient_facts", patient_id)`, so a fact like "fever last week" survives across unrelated turns. `fetch_facts` searches it before answering; `extract_facts` writes to it when the router's `save_memory` is true.
-- **Multilingual & OCR**: `translate_in`/`translate_out` use `app/core/rag/translation.py` (langdetect + `GoogleTranslator`) to detect and round-trip non-English (e.g. Urdu) queries; `ocr` uses `pytesseract` (`app/core/rag/ocr.py`) when an `image_base64` is supplied. **It stores the extracted text in `state["ocr_context"]`, kept separate from `raw_input`/`english_query`** — it used to be appended to `raw_input`, which fed ~900 chars of OCR noise through every node and caused a ~9-minute turn *and* a wrong rewrite (image + `"what it mean"` became the template question `"what is the correct format for a medical prescription…"`). Only `reasoner_node` injects `ocr_context` (as `Attached document…`) into the answer prompt — that's what lets it actually explain the prescription; `rewriter_node` only checks `ocr_context`'s presence to preserve document-explain intent.
-- **Threading**: `app/services/agent_service.py` compiles the graph once at import and `run_agent` invokes it via `run_in_threadpool(agent.invoke, state, config)` — LangGraph's sync API must stay off the event loop, same pattern as the streaming bridge. `thread_id` now comes from `AgentRequest.thread_id` (one UUID per conversation, minted by the frontend); it **defaults to `patient_id`** when absent so pre-sidebar clients keep resuming the single per-patient thread.
-- **Conversation history (sidebar)**: there is deliberately **no separate conversation table** — `app/services/conversation_service.py` reconstructs conversations directly from the checkpointer's `checkpoints` rows. A conversation is the chronological sequence of *turn-end* checkpoints for a thread, identified by `final_response` being non-empty (intermediate superstep checkpoints carry an empty one and are filtered out with `checkpoint_ns = ''`). It queries through `checkpointer.conn` (same psycopg pool, same Neon retry-on-OperationalError pattern as `agent_service.py`), selecting only named fields so `image_base64` blobs never leave the DB. Endpoints live on the agent router: `GET /agent/threads` (sidebar rows, newest first) and `GET /agent/threads/{thread_id}` (full transcript with per-turn meta chips — lang, rag decision, sources), both auth-gated by `get_current_user`.
-- **Graph logging**: `app/agent/graph.py` wraps every node with a `_logged(node_name)` decorator that logs entry/exit, elapsed time, and tags any exception with the failing node via `logger.exception`. Nodes log their own decisions (translation lang, router/rewriter/retrieval/answer outcomes) through the shared `app/utils/logging_config.py:get_logger` template — errors land in `logs.txt` alongside auth/RAG.
-
-### Auth & tokens
-
-`app/core/security.py`:
-- **Access tokens**: short-lived JWTs (default 15 min) carrying a `token_version` claim.
-- **Opaque tokens**: refresh, password-reset, and email-verify tokens are random `secrets.token_urlsafe(48)` values; only their **SHA-256 hash** is stored in the DB (`refresh_tokens`, `tokens` tables). Verification is constant-time via `secrets.compare_digest`. Because hashes can't be reversed, refreshing/reset/verify lookups **scan all matching rows and hash-compare** (documented as intentional O(n)).
-- **Revocation**: bumping a user's `token_version` (on password change/reset) invalidates all outstanding JWTs via the check in `app/deps.py:get_current_user`. Refresh tokens are rotated (marked `revoked` after use).
-- Password hashing uses argon2 (`argon2-cffi`). Helper `require_role(*roles)` in `deps.py` for role-gating.
-
-### Password policy
-
-`app/core/password_policy.py` is the **source of truth** for password strength (length, case, digit, special char, common-password blocklist). The backend enforces it in `app/schemas/auth.py` via `model_validator` on register/reset/change schemas; the frontend `RegisterModal` mirrors these rules for UX only. Change rules here, then update the mirror.
-
-### DB & email
-
-- `app/db/session.py`: async engine tuned for Neon — `pool_pre_ping=True` and `pool_recycle=300` (seconds) to survive Neon's idle connection drops; `connect_args={"timeout": 60}`. Sessions via `async_sessionmaker(…, expire_on_commit=False)`.
-- `app/utils/email.py`: when `SMTP_HOST` is empty (dev), emails are **logged to console** instead of sent. Set `SMTP_*` vars to activate real sending.
-- `app/utils/logging_config.py`: `get_logger()` writes to console + `logs.txt`; `log_auth_event()` emits structured auth lines.
-
-## Frontend notes
-
-- API base is hardcoded `http://localhost:8000` in **four** places: `src/utils/api.js`, `src/context/AuthContext.jsx`, `src/utils/session.js`, and `src/components/ChatWindow.jsx` (line 317; the same host is echoed in an error string near line 404). `ChatBox.jsx` is now just the auth-gated layout wrapper (sidebar + window) and holds no API base.
-- `api.js` is a thin JWT wrapper: auto-attaches `access_token` from localStorage, and on a 401 tries a **silent refresh** (`/auth/refresh`) and retries once; only if the refresh fails does it dispatch `auth:unauthorized` (listened for in `AuthContext.jsx`) to force logout.
-- `AuthContext.jsx` owns auth state; any auth screen should use `useAuth()`. The full session — access token + 7-day refresh token + cached user profile — is persisted in localStorage via `src/utils/session.js`, so a page reload or backend restart keeps the user signed in. On mount a **network error** (server restarting) keeps the cached session and retries instead of logging out; a 401 triggers a silent refresh. `refreshSession()` dispatches `auth:session-refreshed` to keep React state in sync.
-- `ChatWindow.jsx` is the chat UI. It has a 3-mode selector — **Agent** (default, `POST /agent/invoke`), **RAG** (`/rag/stream`), **Chat** (`/chat/stream`) — and streams the two stream endpoints via a `ReadableStream` reader while rendering assistant Markdown with a custom light renderer (code blocks, bold/italic, auto-linked URLs) — no `react-markdown` dependency.
-- **Conversation sidebar**: `ConversationsContext.jsx` is the single owner of the sidebar list, the active LangGraph `thread_id` (a fresh `crypto.randomUUID()` per new chat), and the restored message transcript — all fetched from `/agent/threads*`, no local store. `App.jsx` keys the provider by `user.id`, so signing out/in or switching patients remounts it and one patient never sees another's threads. `Sidebar.jsx` + `ConversationItem.jsx` render the list (desktop 280px rail that collapses, plus a mobile slide-in drawer); `utils/time.js` formats relative timestamps.
-- Tailwind 4 is wired through `@tailwindcss/vite` in `vite.config.js`.
-
-## Docs
-
-`docs/` holds project notes — including `solution.md` and `training-report.md` describing the fine-tuning of the base model (BioMistral-7B, QLoRA, converted to GGUF for `llama-cpp-python`) and its eval metrics, plus `docs/flow-charts/` with the agent-pipeline design notes (`agent-infra.md`, `ocr-node.md`, `router-node.md`, `rewriter.md`, `translate-node.md`, `translation.md`). These are context around the ML pipeline, not required to run the app.
-```
-
----
-
 ## File: `contextBuilder.py`
 
 ```python
@@ -222,6 +115,41 @@ def generate_markdown_context(root_dir="."):
 
 if __name__ == "__main__":
     generate_markdown_context()
+```
+
+---
+
+## File: `pyproject.toml`
+
+```
+[tool.coverage.run]
+source = ["app"]
+omit = [
+    "app/tests/*",
+    "app/eval/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+
+```
+
+---
+
+## File: `pytest.ini`
+
+```
+[pytest]
+asyncio_mode = auto
+testpaths = tests
+markers =
+    unit: fast unit tests — pure functions/classes, all I/O mocked, no external dependencies
+    integration: full-route tests through the ASGI client with mocked external services + sqlite DB
+    live: requires real external services (Postgres, Qdrant, LLM); skipped unless RUN_LIVE_TESTS=1
+filterwarnings =
+    ignore::DeprecationWarning
+
 ```
 
 ---
@@ -1644,6 +1572,11 @@ Add an appropriate open-source license if this repository is intended for public
 ## File: `requirements.txt`
 
 ```text
+absl-py==2.5.0
+accelerate==1.14.0
+aiohappyeyeballs==2.7.1
+aiohttp==3.14.3
+aiosignal==1.4.0
 aiosqlite==0.22.1
 alembic==1.18.5
 annotated-doc==0.0.5
@@ -1651,79 +1584,139 @@ annotated-types==0.8.0
 anyio==4.14.2
 argon2-cffi==25.1.0
 argon2-cffi-bindings==25.1.0
-async-timeout==5.0.1
+asttokens==3.0.2
+async-timeout==4.0.3
 asyncpg==0.31.0
+attrs==26.1.0
 beautifulsoup4==4.15.0
+bert-score==0.3.13
 certifi==2026.7.22
 cffi==2.1.0
 charset-normalizer==3.4.9
 click==8.4.2
 colorama==0.4.6
+comm==0.2.3
+contourpy==1.3.2
 cryptography==49.0.0
+cycler==0.12.1
+datasets==5.0.1
+debugpy==1.8.21
+decorator==5.3.1
+deep-translator==1.11.4
+defusedxml==0.7.1
+dill==0.4.1
 diskcache==5.6.3
+distro==1.9.0
 dnspython==2.8.0
-deep_translator==1.11.4
 ecdsa==0.19.2
 email-validator==2.3.0
 exceptiongroup==1.3.1
+executing==2.2.1
 fastapi==0.139.2
 filelock==3.32.2
-fsspec==2026.7.0
+fonttools==4.63.0
+frozenlist==1.8.0
+fsspec==2026.6.0
 gguf==0.19.0
 google_search_results==2.4.2
 greenlet==3.5.4
+groq==0.37.1
 grpcio==1.83.0
 h11==0.16.0
 h2==4.4.1
 hf-xet==1.6.0
 hpack==4.2.0
 httpcore==1.0.9
+httpcore2==2.10.0
 httpx==0.28.1
+httpx-sse==0.4.3
+httpx2==2.10.0
 huggingface_hub==1.26.0
 hyperframe==6.1.0
 idna==3.18
+iniconfig==2.3.0
+ipykernel==7.3.0
+ipython==8.39.0
+jedi==0.20.0
 Jinja2==3.1.6
+jiter==0.16.0
 joblib==1.5.3
-langchain-core==1.5.3
+jsonpatch==1.33
+jsonpointer==3.1.1
+jupyter_client==8.9.1
+jupyter_core==5.9.1
+kiwisolver==1.5.0
+langchain==1.3.15
+langchain-classic==1.0.8
+langchain-community==0.4.2
+langchain-core==1.5.4
+langchain-groq==1.1.3
+langchain-openai==1.5.0
 langchain-protocol==0.0.18
+langchain-text-splitters==1.1.2
 langdetect==1.0.9
-langgraph==1.2.10
+langgraph==1.2.11
 langgraph-checkpoint==4.1.1
 langgraph-checkpoint-postgres==3.1.1
+langgraph-prebuilt==1.1.0
 langgraph-sdk==0.4.2
-langsmith==0.10.16
+langsmith==0.10.18
 llama_cpp_python==0.3.34
 Mako==1.3.12
 markdown-it-py==4.2.0
 MarkupSafe==3.0.3
+matplotlib==3.10.9
+matplotlib-inline==0.2.2
 mdurl==0.1.2
 mpmath==1.3.0
+multidict==6.7.1
+multiprocess==0.70.19
+nest-asyncio2==1.7.2
 networkx==3.4.2
+nltk==3.10.2
 numpy==1.26.4
+openai==3.0.0
+orjson==3.11.9
+ormsgpack==1.12.2
 packaging==26.0
 pandas==2.2.3
+parso==0.8.7
+peft==0.20.0
 pillow==12.3.0
+platformdirs==4.11.2
+pluggy==1.6.0
 portalocker==3.2.0
+prompt_toolkit==3.0.53
+propcache==0.5.2
 protobuf==7.35.1
-psycopg[binary]==3.3.4
+psutil==7.2.2
+psycopg==3.3.4
+psycopg-binary==3.3.4
 psycopg-pool==3.3.1
+pure_eval==0.2.3
+pyarrow==25.0.0
 pyasn1==0.6.4
 pycparser==3.0
 pydantic==2.13.4
 pydantic-settings==2.14.2
 pydantic_core==2.46.4
 Pygments==2.20.0
+pyparsing==3.3.2
 pytesseract==0.3.13
+pytest==9.1.1
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.2
 python-jose==3.5.0
 pytz==2026.3.post1
 pywin32==312
 PyYAML==6.0.3
+pyzmq==27.1.0
 qdrant-client==1.19.0
 regex==2026.7.19
 requests==2.34.2
+requests-toolbelt==1.0.0
 rich==15.0.0
+rouge_score==0.1.2
 rsa==4.9.1
 safetensors==0.8.0
 scikit-learn==1.7.2
@@ -1731,22 +1724,35 @@ scipy==1.15.3
 sentence-transformers==5.6.1
 shellingham==1.5.4
 six==1.17.0
+sniffio==1.3.1
 soupsieve==2.9.2
 SQLAlchemy==2.0.51
+stack-data==0.6.3
 starlette==1.3.1
 sympy==1.14.0
+tenacity==9.1.4
 threadpoolctl==3.6.0
+tiktoken==0.13.0
 tokenizers==0.22.2
 tomli==2.4.1
 torch==2.13.0
+tornado==6.5.8
 tqdm==4.70.0
+traitlets==5.16.1
 transformers==5.14.1
+truststore==0.10.4
 typer==0.27.1
 typing-inspection==0.4.2
 typing_extensions==4.16.0
 tzdata==2026.3
 urllib3==2.7.0
+uuid_utils==0.17.0
 uvicorn==0.51.0
+wcwidth==0.8.2
+websockets==15.0.1
+xxhash==3.8.1
+yarl==1.24.5
+zstandard==0.25.0
 
 ```
 
@@ -1775,7 +1781,9 @@ class Settings(BaseSettings):
     VERIFY_TOKEN_EXPIRE_HOURS: int = 48            # email-verify token TTL
 
     # ── Model & CORS (sensible dev defaults) ──────────────────────────────
-    MODEL_PATH: str = r"C:\Users\jason\.cache\models\biomistral-Q4_K_M.gguf"
+    LLM_MODEL: str = r"C:\Users\jason\.cache\models\biomistral-Q4_K_M.gguf"
+    LLM_BASE_URL: str = "http://127.0.0.1:8080/v1"
+    LLM_API_KEY: str = "api-key"
     CORS_ORIGINS: list[str] = ["http://localhost:5173"]
 
     # ── Email / SMTP (leave unset for dev — emails are logged to console) ─
@@ -1788,6 +1796,7 @@ class Settings(BaseSettings):
 
     SERP_API_KEY : str
     GROQ_API_KEY : str
+    GROQ_MODEL: str = "llama-3.3-70b-versatile"  # fast & reliable free tool-calling model
     model_config = ConfigDict(env_file=".env", extra="ignore")
 
 
@@ -1808,6 +1817,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import decode_access_token
 from app.db.session import get_db
 from app.models.user import User
+from app.utils.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
@@ -1819,6 +1831,7 @@ async def get_current_user(
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Invalid credentials",
+        headers={"WWW-Authenticate": "Bearer"},
     )
 
     try:
@@ -1826,23 +1839,36 @@ async def get_current_user(
         user_id: str | None = payload.get("sub")
         token_version: int | None = payload.get("token_version")
         if user_id is None:
+            logger.warning("Token decode succeeded but 'sub' claim missing")
             raise credentials_exception
     except Exception:
+        logger.warning("Token decode failed — invalid or expired token")
         raise credentials_exception
 
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
 
-    if user is None or not user.is_active:
+    if user is None:
+        logger.warning("Auth user not found | user_id=%s", user_id)
         raise credentials_exception
 
+    if not user.is_active:
+        logger.warning("Auth user inactive | user=%s", user.username)
+        raise credentials_exception
 
+    logger.debug("Authenticated user=%s | token_version=%s", user.username, token_version)
     return user
 
 
 def require_role(*allowed_roles: str):
     def checker(user: User = Depends(get_current_user)) -> User:
         if user.role not in allowed_roles:
+            logger.warning(
+                "Role access denied | user=%s | role=%s | required=%s",
+                user.username,
+                user.role,
+                ", ".join(allowed_roles),
+            )
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Not enough permissions",
@@ -1881,14 +1907,20 @@ def validate_settings():
         settings.SECRET_KEY,
         settings.QDRANT_URL,
         settings.GROQ_API_KEY,
+        settings.LLM_API_KEY,
     ]
 
     if not all(required):
+        logger.error("Missing required environment variables — aborting startup")
         raise RuntimeError("Missing required environment variables")
+
+    logger.info("✓ All required environment variables present")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+
+    logger.info("▶ Application lifespan starting...")
 
     # DB backends (LangGraph checkpointer + store) must be set up before the
     # async SQLAlchemy tables and embedder warm-up run.
@@ -1900,7 +1932,9 @@ async def lifespan(app: FastAPI):
         # app.state.agent = build_health_agent()    # new
         await init_models()
 
+        logger.info("✓ Application startup complete — ready to serve requests")
         yield
+        logger.info("■ Application shutting down...")
 
 
 app = FastAPI(
@@ -1942,174 +1976,157 @@ async def root():
 
 ```python
 # app/agent/graph.py
+"""Decoupled router-node pipeline.
+
+    Router (Groq, tool-calling)  ──tools?──▶  Tools  ──▶  BioMistral (local GGUF)  ──▶  END
+                        │
+                        └───── no tools ─────────────────▶  BioMistral  ──▶  END
+
+The router decides whether tools are needed and emits tool_calls; it never
+writes the final answer. Tool results are flattened into plain text and
+handed to the BioMistral node, which does a single clean inference turn.
+"""
+import re
 import time
 
-from langgraph.graph import StateGraph, END
-from langgraph.prebuilt import ToolNode, tools_condition
 from langchain_core.messages import AIMessage
+from langgraph.graph import END, StateGraph
+from langgraph.prebuilt import ToolNode, tools_condition
 
+from app.agent.nodes.biomistral_node import biomistral_node
+from app.agent.nodes.router_node import router_node
 from app.agent.state import AgentState
-from app.agent.nodes.agent_node import agent_node
 from app.agent.tools import TOOLS
 from app.db.lifespan import checkpointer, store
 from app.utils.logging_config import get_logger
 
 logger = get_logger(__name__)
 
-
-def _logged(node_name: str):
-    """Wrap a graph node with simple start, finish, and error logs."""
-
-    def decorator(node):
-        def wrapped(state: AgentState) -> AgentState:
-            start = time.monotonic()
-
-            logger.info("▶ %s node started", node_name)
-
-            try:
-                result = node(state)
-
-            except Exception:
-                logger.exception("✗ %s node failed", node_name)
-                raise
-
-            elapsed = time.monotonic() - start
-            logger.info("✓ %s node finished in %.2fs", node_name, elapsed)
-
-            return result
-
-        return wrapped
-
-    return decorator
-
-
 _tool_node = ToolNode(TOOLS)
 
 
-def _run_tools(state: AgentState) -> AgentState:
-    """Execute tool calls and log only the important details."""
+def _extract_tool_metadata(tool_messages: list) -> dict:
+    """Flatten this turn's ToolMessages into plain text for BioMistral and
+    pull out the per-turn metadata flags the sidebar / response schema need.
 
+    Only the *new* tool messages (returned by the ToolNode this turn) are
+    scanned, so needs_rag / saved_memory reflect the current turn, not the
+    accumulated history.
+    """
+    extracted: list[str] = []
+    rag_used = False
+    saved_memory = False
+    decision_text = ""
+    sources: list[str] = []
+
+    for msg in tool_messages:
+        name = getattr(msg, "name", "") or ""
+        content = msg.content or ""
+
+        extracted.append(f"--- Context from tool [{name}] ---\n{content}\n")
+
+        if name == "retrieve_medical_knowledge":
+            rag_used = True
+            for line in content.splitlines():
+                if "Retrieval decision" in line:
+                    match = re.search(r"Retrieval decision:\s*([A-Za-z]+)", line)
+                    if match:
+                        decision_text = match.group(1)
+                else:
+                    match = re.match(r"^\s*\[([^\]]+)\]", line)
+                    if match:
+                        sources.append(match.group(1))
+
+        if name in ("save_patient_fact", "save_emotional_state"):
+            saved_memory = True
+
+    return {
+        "tool_results": "\n".join(extracted),
+        "needs_rag": rag_used,
+        "retrieval_decision": decision_text or ("retrieved" if rag_used else ""),
+        "retrieved_docs": [{"source": s} for s in sources[:3]],
+        "saved_memory": saved_memory,
+    }
+
+
+def _run_tools(state: AgentState) -> dict:
+    """Execute the router's tool calls, then fold the results into the
+    plain-text context + metadata BioMistral consumes."""
     messages = state.get("messages", [])
 
-    # Show which tools the agent wants to use
     if messages:
         last_message = messages[-1]
-
-        if (
-            isinstance(last_message, AIMessage)
-            and getattr(last_message, "tool_calls", None)
-        ):
+        if isinstance(last_message, AIMessage) and getattr(last_message, "tool_calls", None):
             for tool_call in last_message.tool_calls:
                 tool_name = tool_call.get("name", "unknown_tool")
                 logger.info("🔧 Running tool: %s", tool_name)
 
     start = time.monotonic()
-
     try:
         result = _tool_node.invoke(state)
-
     except Exception:
         logger.exception("✗ Tool execution failed")
         raise
+    logger.info("✓ Tools finished in %.2fs", time.monotonic() - start)
 
-    logger.info(
-        "✓ Tools finished in %.2fs",
-        time.monotonic() - start,
-    )
-
+    new_tool_msgs = [
+        m for m in result.get("messages", []) if getattr(m, "type", None) == "tool"
+    ]
+    result.update(_extract_tool_metadata(new_tool_msgs))
     return result
 
 
-def _route_after_agent(state: AgentState) -> str:
-    # If the agent requested a tool, continue to the tools node.
-    # Otherwise, the agent has produced the final answer.
-    route = "tools" if tools_condition(state) == "tools" else END
+def _route_after_router(state: AgentState) -> str:
+    """tools_condition wrapper: route to 'tools' when the router emitted
+    tool_calls, otherwise straight to the BioMistral reasoning node.
 
-    logger.info("↪ Agent routing → %s", route)
-
+    tools_condition raises on an empty message list; the router always
+    persists at least the user's HumanMessage before this runs, but we guard
+    the empty case so a unit call can't crash the graph.
+    """
+    if not state.get("messages"):
+        route = "biomistral"
+    else:
+        route = "tools" if tools_condition(state) == "tools" else "biomistral"
+    logger.info("↪ Router routing → %s", route)
     return route
 
 
 def build_health_agent():
     graph = StateGraph(AgentState)
 
-    graph.add_node("agent", _logged("agent")(agent_node))
-    graph.add_node("tools", _logged("tools")(_run_tools))
+    # 1. Add nodes
+    graph.add_node("router", router_node)
+    graph.add_node("tools", _run_tools)
+    graph.add_node("biomistral", biomistral_node)
 
-    graph.set_entry_point("agent")
+    # 2. Entry point
+    graph.set_entry_point("router")
 
+    # 3. Conditional routing from the router
     graph.add_conditional_edges(
-        "agent",
-        _route_after_agent,
+        "router",
+        _route_after_router,
         {
-            "tools": "tools",
-            END: END,
+            "tools": "tools",        # router outputted tool_calls
+            "biomistral": "biomistral",  # no tools → straight to reasoning
         },
     )
 
-    graph.add_edge("tools", "agent")
+    # 4. Tools feed their context into BioMistral
+    graph.add_edge("tools", "biomistral")
+
+    # 5. BioMistral ends the turn
+    graph.add_edge("biomistral", END)
 
     compiled = graph.compile(
         checkpointer=checkpointer,
         store=store,
     )
 
-    logger.info("✓ Health agent graph compiled")
-
+    logger.info("✓ Health agent graph compiled (router → tools? → biomistral → END)")
     return compiled
-```
 
----
-
-## File: `app\agent\prompt.py`
-
-```python
-SYSTEM_PROMPT = """You are an empathetic and intelligent Pakistani AI health companion.
-
-Your main goal is to have a natural, helpful conversation with the patient.
-
-Understand what the patient is saying, ask relevant follow-up questions when
-needed, and give a clear and simple response. Do not provide unnecessary
-information or long medical reports.
-
-IMPORTANT RULES:
-
-- Talk naturally like a helpful health companion, not like a medical report.
-- Match the patient's language. You can communicate in English, Urdu, Roman
-  Urdu, or a natural mixture of them.
-- Keep responses concise and focused on the patient's actual question.
-- Do not assume a diagnosis from limited information.
-- Ask follow-up questions when important information is missing.
-- If the patient is only greeting, chatting, or saying thanks, respond
-  naturally without using any tools.
-- Use patient memory only when previous information is relevant to the
-  current conversation.
-- Use medical knowledge retrieval when reliable medical information is
-  needed to answer the patient's question.
-- Never call the same tool with the same input more than once.
-- Do not use tools unnecessarily.
-- If the available information is enough, answer the patient directly.
-- For potentially serious symptoms, clearly recommend seeking professional
-  medical care when appropriate.
-- Never invent patient history, medical facts, or tool results.
-
-Available tools:
-{tool_docs}
-
-Patient ID:
-{patient_id}
-
-Current patient message:
-{query}
-
-Previous tool results:
-{tool_results}
-
-Think briefly about what the patient needs, then choose the most appropriate
-action.
-
-Return ONLY the JSON object required by the application.
-"""
 ```
 
 ---
@@ -2125,9 +2142,18 @@ from langgraph.graph.message import add_messages
 class AgentState(TypedDict):
     patient_id: str
     ocr_context: str
-    tool_call_count: int   # loop guard, prevents an unbounded agent<->tools loop
-    tool_results: str      # scratch text built each turn, shown to the LLM in the prompt
+    tool_results: str      # plain text gathered from tools this turn, shown to BioMistral
+    raw_input: str
     messages: Annotated[list, add_messages]
+
+    # Metadata flags — read straight from checkpoint rows by
+    # conversation_service.py to build the sidebar. Don't rename these
+    # without updating that file too.
+    needs_rag: bool
+    retrieval_decision: str
+    retrieved_docs: list[dict]
+    saved_memory: bool     # per-turn: a memory tool ran THIS turn (not a prior one)
+    detected_lang: str     # kept for conversation_service / agent_service (legacy)
 
     # answer/final_response are the same text right now (Phase 2 removed the
     # translate_out node that used to translate answer -> final_response).
@@ -2136,15 +2162,6 @@ class AgentState(TypedDict):
     answer: str
     final_response: str
 
-    # Kept because app/services/conversation_service.py reads these fields
-    # straight out of the checkpoint rows to build the sidebar. Don't rename
-    # these without updating that file too.
-    raw_input: str
-    detected_lang: str
-    needs_rag: bool
-    retrieval_decision: str
-    retrieved_docs: list[dict]
-    saved_memory: bool   # per-turn: a memory tool ran THIS turn (not a prior one)
 ```
 
 ---
@@ -2169,13 +2186,17 @@ logger = get_logger(__name__)
 def fetch_patient_facts(patient_id: str, query: str) -> str:
     """Retrieve relevant medical facts about a patient from persistent memory.
     Use when the patient refers to past symptoms or history."""
+    logger.info("▶ fetch_patient_facts | patient=%s | query=%s", patient_id, query[:80])
     if store is None:
+        logger.warning("Memory store not available for fetch_patient_facts")
         return "Memory store not available."
     try:
         items = store.search(("patient_facts", patient_id), query=query, limit=5)
         facts = [item.value for item in items]
         if not facts:
+            logger.info("No patient history found | patient=%s", patient_id)
             return "No relevant patient history found."
+        logger.info("✓ Fetched %d patient facts | patient=%s", len(facts), patient_id)
         lines = [f"- {f['symptom']} (onset: {f['onset']}, status: {f['status']})" for f in facts]
         return "Known patient history:\n" + "\n".join(lines)
     except Exception as e:
@@ -2186,11 +2207,18 @@ def fetch_patient_facts(patient_id: str, query: str) -> str:
 @tool
 def retrieve_medical_knowledge(query: str) -> str:
     """Retrieve evidence-based medical knowledge for diagnosis or treatment questions."""
+    logger.info("▶ retrieve_medical_knowledge | query=%s", query[:80])
     try:
         result = corrective_retrieve(query, top_k=5)
         docs = result["docs"]
         if not docs:
+            logger.info("No documents found | decision=%s", result["decision"])
             return f"[Retrieval decision: {result['decision']}] No relevant documents found."
+        logger.info(
+            "✓ retrieve_medical_knowledge returned %d docs | decision=%s",
+            len(docs),
+            result["decision"],
+        )
         lines = [f"[{d['source']}] {d['text'][:400]}" for d in docs[:3]]
         return f"[Retrieval decision: {result['decision']}]\n\n" + "\n\n".join(lines)
     except Exception as e:
@@ -2201,7 +2229,14 @@ def retrieve_medical_knowledge(query: str) -> str:
 @tool
 def save_patient_fact(patient_id: str, symptom: str, onset: str, status: str, source_message: str) -> str:
     """Save a newly reported symptom to the patient's persistent record."""
+    logger.info(
+        "▶ save_patient_fact | patient=%s | symptom=%s | status=%s",
+        patient_id,
+        symptom,
+        status,
+    )
     if store is None:
+        logger.warning("Memory store not available for save_patient_fact")
         return "Memory store not available."
     key = f"{symptom}_{date.today().isoformat()}_{uuid.uuid4().hex[:4]}"
     try:
@@ -2209,6 +2244,7 @@ def save_patient_fact(patient_id: str, symptom: str, onset: str, status: str, so
             "symptom": symptom, "onset": onset, "status": status,
             "recorded_on": date.today().isoformat(), "source_message": source_message,
         })
+        logger.info("✓ Saved patient fact | patient=%s | key=%s", patient_id, key)
         return f"Saved to patient record: {symptom} ({status})"
     except Exception as e:
         logger.exception("save_patient_fact failed")
@@ -2218,7 +2254,14 @@ def save_patient_fact(patient_id: str, symptom: str, onset: str, status: str, so
 @tool
 def save_emotional_state(patient_id: str, emotion: str, intensity: str, trigger: str, source_message: str) -> str:
     """Save the patient's emotional state when they express anxiety, stress, or fear."""
+    logger.info(
+        "▶ save_emotional_state | patient=%s | emotion=%s | intensity=%s",
+        patient_id,
+        emotion,
+        intensity,
+    )
     if store is None:
+        logger.warning("Memory store not available for save_emotional_state")
         return "Memory store not available."
     key = f"emotion_{date.today().isoformat()}_{uuid.uuid4().hex[:4]}"
     try:
@@ -2226,6 +2269,7 @@ def save_emotional_state(patient_id: str, emotion: str, intensity: str, trigger:
             "emotion": emotion, "intensity": intensity, "trigger": trigger,
             "recorded_on": date.today().isoformat(), "source_message": source_message,
         })
+        logger.info("✓ Saved emotional state | patient=%s | key=%s", patient_id, key)
         return f"Noted emotional state: {emotion} ({intensity})"
     except Exception as e:
         logger.exception("save_emotional_state failed")
@@ -2237,237 +2281,178 @@ TOOLS = [fetch_patient_facts, retrieve_medical_knowledge, save_patient_fact, sav
 
 ---
 
-## File: `app\agent\nodes\agent_node.py`
+## File: `app\agent\nodes\biomistral_node.py`
 
 ```python
-# app/agent/nodes/agent_node.py
-import json
-import re
+# app/agent/nodes/biomistral_node.py
+"""Node 2 — BioMistral reasoning.
 
-from llama_cpp import LlamaGrammar
-from langchain_core.messages import AIMessage
+Receives the raw user input along with any plain-text context the router's
+tools gathered this turn (memory + RAG) and produces the final empathetic
+answer from the local GGUF model. Because tool-calling is offloaded to the
+router, this node does a single clean inference turn with no JSON or
+function-calling overhead.
+"""
+import time
 
-from app.core.llm import llm, llm_lock
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+
 from app.agent.state import AgentState
-from app.schemas.agent import ToolCall
+from app.core.llm import llm
 from app.utils.logging_config import get_logger
 
 logger = get_logger(__name__)
 
-_SCHEMA = ToolCall.model_json_schema()
-_GRAMMAR = LlamaGrammar.from_json_schema(json.dumps(_SCHEMA))
-MAX_TOOL_CALLS = 4
-MAX_ANSWER_TOKENS = 900
+# OCR documents can be long; cap what we feed the local model so we don't
+# blow its context window.
+_OCR_CHAR_LIMIT = 2000
 
-# Below this many characters, we treat the model's "answer" as effectively
-# blank and try to recover real content instead of showing it to the user.
-MIN_USABLE_ANSWER_CHARS = 5
+BIOMISTRAL_PROMPT = """You are an empathetic Pakistani AI health companion.
 
-_TOOL_DOCS = """
-1. fetch_patient_facts(query: str) — check past symptoms/history
-2. retrieve_medical_knowledge(query: str) — look up diagnosis/treatment facts
-3. save_patient_fact(symptom, onset, status, source_message) — record a NEW symptom
-4. save_emotional_state(emotion, intensity, trigger, source_message) — record expressed emotion
-5. final_answer(answer) — respond when you have enough information
+Use the provided medical & patient context below (if available) to answer the user's health concerns.
+
+
+{ocr_context}
+
+{tool_context}
+
+
+GUIDELINES:
+- If the query is plain conversational/greeting, reply naturally in plain text.
+- If it is a medical query, respond conversationally based on the context. You can recommend these things where helpful:
+  - Possible diagnosis or insights
+  - Lifestyle adjustments, diet, and exercise suggestions
+  - Home care or general advice
+  - Clear advice on when to consult a doctor
+- Never invent facts outside the provided context.
 """
 
-SYSTEM_PROMPT = """You are an empathetic Pakistani AI health companion.
 
-IMPORTANT RULES:
-- If the patient's message is a greeting, small talk, thanks, a personal
-  question (e.g. "what is my name"), or ANYTHING that is not a medical
-  symptom or health question, use final_answer immediately with a short,
-  direct, normal reply. Do NOT call any tools, do NOT use the
-  Diagnosis/Medicines format, and do NOT tell them to see a doctor for
-  these — that advice only belongs on real medical concerns.
-- Never call the same tool with the same input more than once. Check
-  "Tool results so far" below before picking an action — if it already
-  answers what you need (even if it says "no relevant history found"),
-  move on to final_answer or a DIFFERENT tool instead of repeating it.
-- Only use fetch_patient_facts / retrieve_medical_knowledge when the
-  patient describes an actual symptom or asks a medical question.
-- The "answer" field in your JSON output is REQUIRED and must contain
-  real, non-empty text on EVERY response — even when your action is a
-  tool call, write a short one-line note there (e.g. "Checking history
-  first"). Never leave it blank.
+def biomistral_node(state: AgentState) -> dict:
+    logger.info("▶ BioMistral Reasoning Node Started")
 
-Reason briefly, then pick ONE action. Only call final_answer once you have
-what you need.
+    ocr_raw = (state.get("ocr_context") or "")[:_OCR_CHAR_LIMIT]
+    ocr_str = f"OCR Document Context:\n{ocr_raw}" if ocr_raw else "No OCR text attached."
 
-For final_answer about a MEDICAL concern, format the response with:
-**Diagnosis:** ...
-**Confidence:** ...
-**Medicines:** ...
-**Diet:** ...
-**Exercise:** ...
-**When to see a doctor:** ...
+    tool_str = state.get("tool_results") or "No external context retrieved."
 
-For final_answer to anything else (greetings, personal questions, general
-requests), just reply normally in plain text.
+    formatted_system = BIOMISTRAL_PROMPT.format(
+        ocr_context=ocr_str,
+        tool_context=tool_str,
+    )
 
-Tools:
-{tool_docs}
+    # Single clean inference turn: system prompt (with gathered context) +
+    # the user's raw input only. The router already persisted the user
+    # message, so here we store just the final AIMessage — completing the
+    # conversation pair without re-inserting the HumanMessage.
+    messages = [
+        SystemMessage(content=formatted_system),
+        HumanMessage(content=state["raw_input"]),
+    ]
 
+    start = time.monotonic()
+    response = llm.invoke(messages)
+    logger.info("✓ BioMistral completed in %.2fs", time.monotonic() - start)
+
+    answer_text = (response.content or "").strip()
+    if not answer_text:
+        answer_text = (
+            "I'm sorry, I wasn't able to generate a proper response to that. "
+            "Could you try rephrasing your message?"
+        )
+        response = AIMessage(content=answer_text)
+
+    logger.info(
+        "✓ BioMistral produced final answer | patient=%s | chars=%d",
+        state["patient_id"],
+        len(answer_text),
+    )
+
+    return {
+        "answer": answer_text,
+        "final_response": answer_text,
+        "messages": [response],
+    }
+
+```
+
+---
+
+## File: `app\agent\nodes\router_node.py`
+
+```python
+# app/agent/nodes/router_node.py
+"""Node 1 — Router.
+
+A fast Groq model (llama-3.3-70b-versatile) bound with the healthcare tools
+decides whether the turn needs any tools (memory / RAG) and emits the
+tool_calls when it does. It never produces the final answer — that is the
+BioMistral node's job — so on a no-tool turn the router stores only the
+user's message (no intermediate assistant text that would pollute history).
+"""
+import time
+
+from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_groq import ChatGroq
+
+from app.agent.state import AgentState
+from app.agent.tools import TOOLS
+from app.config import settings
+from app.utils.logging_config import get_logger
+
+logger = get_logger(__name__)
+
+# Groq is used strictly for routing / tool-calling — reliable .bind_tools()
+# support that the local GGUF model can't do cleanly.
+router_llm = ChatGroq(
+    api_key=settings.GROQ_API_KEY,
+    model_name=settings.GROQ_MODEL,
+    temperature=0.0,
+).bind_tools(TOOLS)
+
+ROUTER_SYSTEM_PROMPT = """You are an intelligent routing agent for a healthcare assistant.
+Your job is to analyze the conversation and call appropriate tools ONLY if required:
+1. Call 'fetch_patient_facts' if the user mentions past history/symptoms.
+2. Call 'retrieve_medical_knowledge' if the user asks a specific medical/health query.
+3. Call 'save_patient_fact' or 'save_emotional_state' if the user reports new symptoms or emotional distress.
+
+If no tools are needed (e.g., greetings, small talk), do NOT call any tools.
+Never call the same tool with the same input more than once in a turn.
 Patient ID: {patient_id}
-Query: {query}
-
-Tool results so far:
-{tool_results}
-
-Respond with ONLY the JSON object."""
+"""
 
 
-def _document_section(state: AgentState) -> str:
-    text = state.get("ocr_context", "")
-    if not text:
-        return ""
-    return (
-        "Attached document (from the patient's photo):\n"
-        f"{text[:1000]}\n\n"
-        "The patient attached this medical document and wants it explained, "
-        "verified, or advised on — answer questions about it directly."
-    )
+def router_node(state: AgentState) -> dict:
+    logger.info("▶ Router Node Started | patient=%s", state["patient_id"])
 
+    system_text = ROUTER_SYSTEM_PROMPT.format(patient_id=state["patient_id"])
+    messages = [SystemMessage(content=system_text)] + list(state.get("messages", []))
 
-def _plain_answer_fallback(query: str, doc_section: str) -> str:
-    """Recovery path: the JSON-constrained call produced a blank answer.
+    # The current user input is not in history yet at the start of a turn
+    # (the previous turn ended on an assistant message), so append it for
+    # this invocation only. It gets persisted to state below.
+    if not messages or not isinstance(messages[-1], HumanMessage):
+        messages.append(HumanMessage(content=state["raw_input"]))
 
-    Ask the model to just answer in plain text, no JSON, no grammar. This
-    is a much easier generation task for a small model, so it reliably
-    produces real content even when the structured call didn't.
-    """
-    prompt = (
-        (doc_section + "\n\n" if doc_section else "")
-        + "You are a helpful, empathetic health companion. Answer the "
-        "patient's message directly and naturally in a few sentences.\n\n"
-        f"Patient: {query}\n"
-        "Answer:"
-    )
-    try:
-        with llm_lock:
-            llm.reset()
-            output = llm(prompt, max_tokens=400, temperature=0.4, stop=["Patient:"])
-        text = output["choices"][0]["text"].strip()
-        return text
-    except Exception:
-        logger.exception("Plain-text answer fallback also failed")
-        return ""
+    start = time.monotonic()
+    response = router_llm.invoke(messages)
+    logger.info("✓ Router invoke finished in %.2fs", time.monotonic() - start)
 
+    tool_calls = getattr(response, "tool_calls", None)
 
-def agent_node(state: AgentState) -> AgentState:
-    count = state.get("tool_call_count", 0)
+    # Always persist the user's message so the conversation pair survives in
+    # the checkpoint (add_messages appends; losing the HumanMessage breaks
+    # role alternation for the local model on later turns). The router's own
+    # AIMessage is only stored when it actually carries tool_calls —
+    # otherwise it would be a ghost assistant turn before the real answer.
+    if tool_calls:
+        names = [tc.get("name", "?") for tc in tool_calls]
+        logger.info("Router requested tools: %s", ", ".join(names))
+        return {"messages": [HumanMessage(content=state["raw_input"]), response]}
 
-    messages = state.get("messages", [])
-    tool_msgs = []
-    for m in reversed(messages):
-        if isinstance(m, AIMessage):
-            if not getattr(m, "tool_calls", None):
-                break
-            continue
-        if getattr(m, "type", None) == "tool":
-            tool_msgs.append(m)
-    tool_results = (
-        "\n\n".join(f"Tool '{m.name}' returned:\n{m.content[:500]}" for m in reversed(tool_msgs))
-        if tool_msgs else "(No tool results yet)"
-    )
-    state["tool_results"] = tool_results
+    logger.info("Router decided no tools needed → straight to BioMistral")
+    return {"messages": [HumanMessage(content=state["raw_input"])]}
 
-    forced_final = count >= MAX_TOOL_CALLS
-
-    prompt = SYSTEM_PROMPT.format(
-        tool_docs=_TOOL_DOCS if not forced_final else "final_answer(answer) — you MUST use this now.",
-        patient_id=state["patient_id"],
-        query=state["raw_input"],
-        tool_results=tool_results,
-    )
-    doc_section = _document_section(state)
-    if doc_section:
-        prompt = doc_section + "\n\n" + prompt
-
-    with llm_lock:
-        llm.reset()
-        output = llm(prompt, grammar=_GRAMMAR, max_tokens=MAX_ANSWER_TOKENS, temperature=0.3)
-
-    raw = output["choices"][0]["text"]
-    finish_reason = output["choices"][0].get("finish_reason")
-
-    try:
-        decision = ToolCall.model_validate_json(raw)
-        if forced_final:
-            decision.action = "final_answer"
-    except Exception:
-        logger.exception(f"Agent validation failed | finish_reason={finish_reason} | raw={raw!r}")
-        decision = ToolCall(
-            thought="Fallback.", action="final_answer", answer="",
-        )
-
-    if decision.action == "final_answer":
-        answer_text = (decision.answer or "").strip()
-
-        # THE ACTUAL FIX: instead of silently swapping in a misleading
-        # "see a doctor" message whenever the JSON-constrained call left
-        # answer blank/too short, try ONE plain-text generation to get a
-        # real, relevant reply first.
-        if len(answer_text) < MIN_USABLE_ANSWER_CHARS:
-            logger.warning(
-                "final_answer had a blank/too-short answer (%r) — retrying with plain completion",
-                answer_text,
-            )
-            recovered = _plain_answer_fallback(state["raw_input"], doc_section)
-            if len(recovered) >= MIN_USABLE_ANSWER_CHARS:
-                answer_text = recovered
-            else:
-                # Both attempts failed to produce real content — be honest
-                # about it instead of giving unrelated medical advice.
-                answer_text = (
-                    "I'm sorry, I wasn't able to generate a proper response "
-                    "to that. Could you try rephrasing your message?"
-                )
-
-        state["answer"] = answer_text
-        state["final_response"] = answer_text
-        new_message = AIMessage(content=answer_text)
-    else:
-        args = dict(decision.action_input or {})
-        args.setdefault("patient_id", state["patient_id"])
-        if decision.action in ("save_patient_fact", "save_emotional_state"):
-            args.setdefault("source_message", state["raw_input"])
-        elif decision.action in ("retrieve_medical_knowledge", "fetch_patient_facts"):
-            args.setdefault("query", state["raw_input"])
-        new_message = AIMessage(
-            content=decision.thought,
-            tool_calls=[{"id": f"tc_{count}", "name": decision.action, "args": args}],
-        )
-        state["tool_call_count"] = count + 1
-
-    rag_used = any(
-        getattr(m, "name", "") == "retrieve_medical_knowledge" for m in tool_msgs
-    )
-    state["needs_rag"] = rag_used
-    decision_text = ""
-    sources: list[str] = []
-    for m in tool_msgs:
-        if getattr(m, "name", "") != "retrieve_medical_knowledge":
-            continue
-        for line in (m.content or "").splitlines():
-            if "Retrieval decision" in line:
-                match = re.search(r"Retrieval decision:\s*([A-Za-z]+)", line)
-                if match:
-                    decision_text = match.group(1)
-            else:
-                match = re.match(r"^\s*\[([^\]]+)\]", line)
-                if match:
-                    sources.append(match.group(1))
-    state["retrieval_decision"] = decision_text or ("retrieved" if rag_used else "")
-    state["retrieved_docs"] = [{"source": s} for s in sources[:3]]
-
-    state["saved_memory"] = any(
-        getattr(m, "name", "") in ("save_patient_fact", "save_emotional_state")
-        for m in tool_msgs
-    )
-
-    state["messages"] = [new_message]
-    return state
 ```
 
 ---
@@ -2476,6 +2461,8 @@ def agent_node(state: AgentState) -> AgentState:
 
 ```python
 # app/api/agent.py
+import time
+
 from fastapi import APIRouter, Depends, HTTPException
 from starlette.concurrency import run_in_threadpool
 
@@ -2490,18 +2477,40 @@ from app.schemas.agent import (
 from app.core.rag.ocr import extract_text_from_base64
 from app.services.agent_service import run_agent
 from app.services.conversation_service import get_conversation, list_conversations
+from app.utils.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/agent", tags=["Agent"])
 
 
 @router.post("/invoke", response_model=AgentResponse)
 async def invoke(req: AgentRequest):
+    start = time.monotonic()
+    logger.info(
+        "▶ POST /agent/invoke | patient=%s | thread=%s | OCR=%s",
+        req.patient_id,
+        req.thread_id or "(default)",
+        "yes" if req.image_base64 else "no",
+    )
     try:
         ocr_text = ""
         if req.image_base64:
             ocr_text = extract_text_from_base64(req.image_base64)
-        return await run_agent(req, ocr_text)
+            logger.info("OCR extraction completed | chars=%d", len(ocr_text))
+        result = await run_agent(req, ocr_text)
+        logger.info(
+            "✓ POST /agent/invoke completed in %.2fs | patient=%s",
+            time.monotonic() - start,
+            req.patient_id,
+        )
+        return result
     except Exception as e:
+        logger.exception(
+            "✗ POST /agent/invoke failed after %.2fs | patient=%s",
+            time.monotonic() - start,
+            req.patient_id,
+        )
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -2509,16 +2518,42 @@ async def invoke(req: AgentRequest):
 async def list_threads(user: User = Depends(get_current_user)):
     """Sidebar rows: every conversation the current patient has started,
     newest first. Reads turn-end checkpoints — no separate storage layer."""
-    return await run_in_threadpool(list_conversations, str(user.id))
+    start = time.monotonic()
+    logger.info("▶ GET /agent/threads | user=%s", str(user.id))
+    conversations = await run_in_threadpool(list_conversations, str(user.id))
+    logger.info(
+        "✓ GET /agent/threads returned %d conversations in %.2fs | user=%s",
+        len(conversations),
+        time.monotonic() - start,
+        str(user.id),
+    )
+    return conversations
 
 
 @router.get("/threads/{thread_id}", response_model=ConversationDetail)
 async def load_thread(thread_id: str, user: User = Depends(get_current_user)):
     """Full transcript of one conversation, restored from its checkpoints.
     Ownership is enforced by the patient_id stored inside the state."""
+    start = time.monotonic()
+    logger.info(
+        "▶ GET /agent/threads/%s | user=%s",
+        thread_id,
+        str(user.id),
+    )
     conversation = await run_in_threadpool(get_conversation, thread_id, str(user.id))
     if conversation is None:
+        logger.warning(
+            "Conversation not found or access denied | thread=%s | user=%s",
+            thread_id,
+            str(user.id),
+        )
         raise HTTPException(status_code=404, detail="Conversation not found")
+    logger.info(
+        "✓ GET /agent/threads/%s loaded %d messages in %.2fs",
+        thread_id,
+        len(conversation.get("messages", [])),
+        time.monotonic() - start,
+    )
     return conversation
 ```
 
@@ -2654,7 +2689,12 @@ async def stream(req: ChatRequest):
         message.model_dump()
         for message in req.messages
     ]
-    logger.info(f"Received chat request with {len(messages)} messages.\n Message : {messages}")
+    logger.info(
+        "▶ POST /chat/stream | messages=%d | temperature=%.2f | max_tokens=%d",
+        len(messages),
+        req.temperature,
+        req.max_tokens,
+    )
     return StreamingResponse(
         stream_chat(
             messages=messages,
@@ -2714,39 +2754,23 @@ async def stream(req: ChatRequest):
 
 ```python
 # app/core/llm.py
-import os
-import threading
-from llama_cpp import Llama
+from langchain_openai import ChatOpenAI
 
 from app.config import settings
 from app.utils.logging_config import get_logger
 
 logger = get_logger(__name__)
 
-logger.info("Loading Biomistral Fine Tuned model...")
+logger.info("Initializing LLM client (%s @ %s)", settings.LLM_MODEL, settings.LLM_BASE_URL)
 
-llm = Llama(
-    model_path=settings.MODEL_PATH,
-    n_ctx=3072,
-    n_threads=os.cpu_count(),
-    n_batch=512,
-    verbose=False
+llm = ChatOpenAI(
+    base_url=settings.LLM_BASE_URL,
+    api_key=settings.LLM_API_KEY,
+    model=settings.LLM_MODEL,
+    timeout=600
 )
 
-# Three different services share this one Llama object: chat_service and
-# rag_chat_service call llm.create_chat_completion(...), while agent_node
-# calls llm(...) directly with a grammar — a different call style entirely.
-# llama.cpp keeps internal KV-cache state on the object between calls to
-# avoid recomputing prompts from scratch. Mixing unrelated prompts/call
-# styles back-to-back on that shared state (with no reset) can cause
-# expensive cache-recompute stalls or corrupted-looking output.
-#
-# llm_lock ensures only one caller ever runs inference at a time.
-# Each caller should also run `llm.reset()` right before generating —
-# see chat_service.py / rag_chat_service.py / agent_node.py.
-llm_lock = threading.Lock()
-
-logger.info("Biomistral Fine Tuned model loaded.")
+logger.info("LLM client ready.")
 ```
 
 ---
@@ -2850,11 +2874,14 @@ from typing import Optional
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
-from jose import jwt
+from jose import jwt, JWTError
 
 from app.config import settings
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
+from app.utils.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 ph = PasswordHasher()
 
@@ -2872,13 +2899,17 @@ credentials_exception = HTTPException(
 
 
 def hash_password(password: str) -> str:
+    logger.debug("Hashing password")
     return ph.hash(password)
 
 
 def verify_password(plain: str, hashed: str) -> bool:
     try:
-        return ph.verify(hashed, plain)
+        result = ph.verify(hashed, plain)
+        logger.debug("Password verification succeeded")
+        return result
     except VerifyMismatchError:
+        logger.info("Password verification failed — mismatch")
         return False
 
 
@@ -2898,12 +2929,25 @@ def create_access_token(
         expires_delta or timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     )
     to_encode.update({"exp": expire, "token_version": token_version})
-    return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    token = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    logger.debug(
+        "Access token issued | sub=%s | expires=%s | token_version=%d",
+        to_encode.get("sub", "-"),
+        expire.isoformat(),
+        token_version,
+    )
+    return token
 
 
 def decode_access_token(token: str) -> dict:
     """Decode a JWT.  Raises ``JWTError`` on expiry or bad signature."""
-    return jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        logger.debug("Token decoded | sub=%s", payload.get("sub", "-"))
+        return payload
+    except JWTError as e:
+        logger.warning("JWT decode failed | reason=%s", e)
+        raise
 
 def get_current_user(token: str = Depends(oauth2_scheme)):
     try:
@@ -2911,8 +2955,10 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
         user_id: str | None = payload.get("sub")
         token_version: int | None = payload.get("token_version")
         if user_id is None:
+            logger.warning("Token decoded but 'sub' claim missing")
             raise credentials_exception
     except Exception:
+        logger.warning("Security get_current_user — token validation failed")
         raise credentials_exception
 
 
@@ -3109,11 +3155,18 @@ logger = get_logger(__name__)
 
 
 def extract_text_from_base64(image_b64: str) -> str:
+    if not image_b64:
+        logger.info("OCR skipped — empty image_base64")
+        return ""
+    logger.info("▶ OCR extraction started | b64_len=%d", len(image_b64))
     try:
         image_bytes = base64.b64decode(image_b64)
         image = Image.open(io.BytesIO(image_bytes))
+        logger.info("Image loaded | size=%s | mode=%s", image.size, image.mode)
         text = pytesseract.image_to_string(image)
-        return text.strip()
+        result = text.strip()
+        logger.info("✓ OCR extraction completed | chars=%d", len(result))
+        return result
     except Exception:
         logger.exception("OCR extraction failed")
         return ""
@@ -3252,16 +3305,22 @@ logger = get_logger(__name__)
 
 def detect_language(text: str) -> str:
     try:
-        return detect(text)
+        lang = detect(text)
+        logger.info("Detected language: %s | text_preview=%s", lang, text[:50])
+        return lang
     except LangDetectException:
+        logger.warning("Language detection failed, defaulting to 'en'")
         return "en"
 
 
 def to_english(text: str, source_lang: str) -> str:
     if source_lang == "en":
         return text
+    logger.info("Translating to English | source=%s | chars=%d", source_lang, len(text))
     try:
-        return GoogleTranslator(source="auto", target="english").translate(text)
+        result = GoogleTranslator(source="auto", target="english").translate(text)
+        logger.info("✓ Translation to English completed | chars=%d", len(result))
+        return result
     except Exception:
         logger.exception("Translation to English failed, falling back to original text")
         return text
@@ -3270,8 +3329,11 @@ def to_english(text: str, source_lang: str) -> str:
 def from_english(text: str, target_lang: str) -> str:
     if target_lang == "en":
         return text
+    logger.info("Translating from English | target=%s | chars=%d", target_lang, len(text))
     try:
-        return GoogleTranslator(source="english", target=target_lang).translate(text)
+        result = GoogleTranslator(source="english", target=target_lang).translate(text)
+        logger.info("✓ Translation to %s completed | chars=%d", target_lang, len(result))
+        return result
     except Exception:
         logger.exception("Translation back to source language failed, returning English")
         return text
@@ -3315,23 +3377,32 @@ from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.store.postgres import PostgresStore
 
 from app.db.pool import build_langgraph_pool
+from app.utils.logging_config import get_logger
 
+logger = get_logger(__name__)
+
+logger.info("Building LangGraph Postgres pools...")
 _checkpointer_pool = build_langgraph_pool()
 checkpointer = PostgresSaver(_checkpointer_pool)
 
 _store_pool = build_langgraph_pool()
 store = PostgresStore(_store_pool)
+logger.info("LangGraph checkpointer and store initialised.")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    logger.info("▶ Setting up LangGraph DB tables...")
     checkpointer.setup()  # creates checkpoint tables on first run, no-ops after
     store.setup()         # creates store tables on first run, no-ops after
+    logger.info("✓ LangGraph DB tables ready (checkpointer + store).")
     try:
         yield
     finally:
+        logger.info("■ Closing LangGraph connection pools...")
         _checkpointer_pool.close()
         _store_pool.close()
+        logger.info("✓ LangGraph connection pools closed.")
 ```
 
 ---
@@ -3377,6 +3448,9 @@ from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
 from app.config import settings
+from app.utils.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 def _langgraph_conn_string() -> str:
@@ -3402,6 +3476,7 @@ def _langgraph_conn_string() -> str:
 
 
 _conn_string = _langgraph_conn_string()
+logger.info("LangGraph direct connection string resolved | host=%s", urlparse(_conn_string).hostname or "?")
 
 
 def build_langgraph_pool() -> ConnectionPool:
@@ -3410,6 +3485,9 @@ def build_langgraph_pool() -> ConnectionPool:
     Non-blocking to construct: the pool opens its connections on a
     background worker, so module import never waits on the DB.
     """
+    logger.info(
+        "Building psycopg ConnectionPool | min_size=1 | max_size=5 | timeout=90s | max_lifetime=900s",
+    )
     return ConnectionPool(
         conninfo=_conn_string,
         kwargs={
@@ -3444,15 +3522,15 @@ def build_langgraph_pool() -> ConnectionPool:
 ## File: `app\db\session.py`
 
 ```python
-import logging
-
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import settings
 from app.db.base import Base
+from app.utils.logging_config import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
+logger.info("Creating async database engine | pool_pre_ping=True | pool_recycle=300s")
 engine = create_async_engine(
     settings.DATABASE_URL,
     echo=False,
@@ -3460,7 +3538,7 @@ engine = create_async_engine(
     pool_recycle=300,          # Refreshes connection before Neon drops it for idling
     connect_args={"timeout": 60},
 )
-logger.info("Database engine created")
+logger.info("Database engine created.")
 
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
@@ -3470,8 +3548,10 @@ async def get_db():
 
 async def init_models():
     # Creates tables directly from models — no migration tool needed yet.
+    logger.info("▶ Running Base.metadata.create_all...")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    logger.info("✓ Database tables initialised.")
 ```
 
 ---
@@ -4586,32 +4666,9 @@ __all__ = ["User", "RefreshToken", "Token"]
 
 ```python
 # app/schemas/agent.py
-from pydantic import BaseModel, Field
-from typing import Optional, Literal
+from typing import Optional
 
-
-class ToolCall(BaseModel):
-    """Grammar-constrained agent decision."""
-    thought: str = Field(..., description="Brief reasoning for this step")
-    action: Literal[
-        "fetch_patient_facts",
-        "retrieve_medical_knowledge",
-        "save_patient_fact",
-        "save_emotional_state",
-        "final_answer",
-    ]
-    action_input: dict = Field(default_factory=dict)
-    # Required (no Optional, no default null) so the model can no longer
-    # emit "answer": null and skip past our checks. It can still emit ""
-    # (an empty string) on a bad generation — we deliberately do NOT add a
-    # strict min_length here, because that would make pydantic raise a
-    # ValidationError on empty text, which just swaps one generic fallback
-    # for another. Instead, agent_node.py checks for blank/short answers
-    # itself and does something more useful about it (see agent_node.py).
-    answer: str = Field(
-        default="",
-        description="For final_answer: the full reply text. For any tool action: a short one-line note on why you're calling it.",
-    )
+from pydantic import BaseModel
 
 
 class AgentRequest(BaseModel):
@@ -4783,13 +4840,15 @@ def _build_initial_state(req: AgentRequest, ocr_text: str = "") -> dict:
         "patient_id": req.patient_id,
         "raw_input": req.query,
         "ocr_context": ocr_text,
+        "answer": "",
         "final_response": "",
         "detected_lang": "",
         "needs_rag": False,
         "retrieval_decision": "",
         "retrieved_docs": [],
+        "saved_memory": False,
+        "tool_results": "",
         "messages": [],
-        "tool_call_count": 0,
     }
 
 
@@ -4816,9 +4875,10 @@ async def run_agent(
     # (and pre-sidebar data) keep resuming the single per-patient thread.
     thread_id = req.thread_id or req.patient_id
 
-    # recursion_limit is LangGraph's own graph-level safety net, on top of
-    # MAX_TOOL_CALLS inside the agent node — belt and suspenders against a
-    # tool loop that never calls final_answer.
+    # recursion_limit is LangGraph's own graph-level safety net. The
+    # decoupled pipeline is linear (router -> tools? -> biomistral -> END),
+    # so it stays well under this, but the cap guards against any future
+    # cyclic edge misbehaving.
     config = {
         "configurable": {
             "thread_id": thread_id,
@@ -4899,15 +4959,16 @@ async def run_agent(
 
 ```python
 # app/services/chat_service.py
-import asyncio
 from typing import AsyncGenerator
 
-from app.core.llm import llm, llm_lock
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+
+from app.core.llm import llm
 from app.utils.logging_config import get_logger
 
 logger = get_logger(__name__)
 
-_SENTINEL = object()
+_ROLE_MAP = {"system": SystemMessage, "user": HumanMessage, "assistant": AIMessage}
 
 
 async def stream_chat(
@@ -4915,66 +4976,26 @@ async def stream_chat(
     temperature: float,
     max_tokens: int,
 ) -> AsyncGenerator[str, None]:
+    lc_messages = [_ROLE_MAP[m["role"]](content=m["content"]) for m in messages]
 
-    loop = asyncio.get_running_loop()
-    queue: asyncio.Queue = asyncio.Queue()
-
-    def producer():
-
-        try:
-            # Hold the lock for the whole streaming call — no other
-            # request (RAG or agent) may touch the shared model while this
-            # one is generating. reset() clears any leftover KV-cache state
-            # from a previous, unrelated call on this same llm object.
-            with llm_lock:
-                llm.reset()
-                stream = llm.create_chat_completion(
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    stream=True,
-                )
-
-                for chunk in stream:
-
-                    delta = chunk["choices"][0]["delta"]
-
-                    if "content" in delta:
-                        loop.call_soon_threadsafe(
-                            queue.put_nowait,
-                            delta["content"],
-                        )
-
-        except Exception:
-
-            logger.exception("Chat generation failed")
-
-            loop.call_soon_threadsafe(
-                queue.put_nowait,
-                Exception(),
-            )
-
-        finally:
-
-            loop.call_soon_threadsafe(
-                queue.put_nowait,
-                _SENTINEL,
-            )
-
-    loop.run_in_executor(None, producer)
-
-    while True:
-
-        item = await queue.get()
-
-        if item is _SENTINEL:
-            break
-
-        if isinstance(item, Exception):
-            yield "\n\nServer Error"
-            return
-
-        yield item
+    logger.info(
+        "▶ stream_chat started | messages=%d | temperature=%.2f | max_tokens=%d",
+        len(lc_messages),
+        temperature,
+        max_tokens,
+    )
+    try:
+        async for chunk in llm.astream(
+            lc_messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        ):
+            if chunk.content:
+                yield chunk.content
+        logger.info("✓ stream_chat completed")
+    except Exception:
+        logger.exception("Chat generation failed")
+        yield "\n\nServer Error"
 ```
 
 ---
@@ -5000,6 +5021,9 @@ import time
 import psycopg
 
 from app.db.lifespan import checkpointer
+from app.utils.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 # A turn is "complete" once its final_response is set. The graph writes an
 # intermediate checkpoint after every superstep, but those carry an empty
@@ -5044,12 +5068,27 @@ def _query(sql: str, params: list) -> list[dict]:
             return run()
         except psycopg.OperationalError:
             if attempt >= _MAX_DB_RETRIES:
+                logger.exception(
+                    "Checkpoint query failed after %d attempts | params=%s",
+                    attempt + 1,
+                    params,
+                )
                 raise
+            logger.warning(
+                "Transient DB error in checkpoint query (attempt %d/%d), retrying...",
+                attempt + 1,
+                _MAX_DB_RETRIES + 1,
+            )
             time.sleep(_RETRY_DELAY_SECONDS)
 
 
 def _fetch_turns(patient_id: str, thread_id: str | None = None) -> list[dict]:
     """Chronological turn-end checkpoints for a patient, optionally one thread."""
+    logger.info(
+        "Fetching turns | patient=%s | thread=%s",
+        patient_id,
+        thread_id or "(all)",
+    )
     sql = (
         f"SELECT {_TURN_FIELDS}"
         f" FROM checkpoints WHERE {_TURN_END}"
@@ -5060,7 +5099,9 @@ def _fetch_turns(patient_id: str, thread_id: str | None = None) -> list[dict]:
         sql += " AND thread_id = %s"
         params.append(thread_id)
     sql += " ORDER BY thread_id ASC, checkpoint_id ASC"
-    return _query(sql, params)
+    turns = _query(sql, params)
+    logger.info("Fetched %d turns | patient=%s", len(turns), patient_id)
+    return turns
 
 
 def _title(turns: list[dict]) -> str:
@@ -5081,6 +5122,7 @@ def _sources(turn: dict) -> list[str]:
 
 def list_conversations(patient_id: str) -> list[dict]:
     """Sidebar rows: every conversation the patient has started, newest first."""
+    start = time.monotonic()
     grouped: dict[str, list[dict]] = {}
     for t in _fetch_turns(patient_id):
         grouped.setdefault(t["thread_id"], []).append(t)
@@ -5102,14 +5144,27 @@ def list_conversations(patient_id: str) -> list[dict]:
     # ISO timestamps come from the same source (checkpoint ts), so a plain
     # lexicographic sort is a valid time order.
     conversations.sort(key=lambda c: c["updated_at"], reverse=True)
+    logger.info(
+        "✓ list_conversations grouped %d turns into %d conversations in %.2fs | patient=%s",
+        sum(len(v) for v in grouped.values()),
+        len(conversations),
+        time.monotonic() - start,
+        patient_id,
+    )
     return conversations
 
 
 def get_conversation(thread_id: str, patient_id: str) -> dict | None:
     """Full message transcript for one thread, or None if it isn't the
     patient's (ownership is enforced by the patient_id inside the state)."""
+    start = time.monotonic()
     turns = _fetch_turns(patient_id, thread_id)
     if not turns:
+        logger.info(
+            "No turns found | thread=%s | patient=%s",
+            thread_id,
+            patient_id,
+        )
         return None
 
     messages = []
@@ -5133,13 +5188,21 @@ def get_conversation(thread_id: str, patient_id: str) -> dict | None:
             }
         )
 
-    return {
+    result = {
         "thread_id": thread_id,
         "patient_id": patient_id,
         "title": _title(turns),
         "updated_at": turns[-1]["ts"] or "",
         "messages": messages,
     }
+    logger.info(
+        "✓ get_conversation built %d messages from %d turns in %.2fs | thread=%s",
+        len(messages),
+        len(turns),
+        time.monotonic() - start,
+        thread_id,
+    )
+    return result
 
 ```
 
@@ -5150,16 +5213,17 @@ def get_conversation(thread_id: str, patient_id: str) -> dict | None:
 ```python
 # app/services/rag_chat_service.py
 
-import asyncio
 from typing import AsyncGenerator
 
-from app.core.llm import llm, llm_lock
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+
+from app.core.llm import llm
 from app.core.rag.corrective_rag import corrective_retrieve
 from app.utils.logging_config import get_logger
 
 logger = get_logger(__name__)
 
-_SENTINEL = object()
+_ROLE_MAP = {"system": SystemMessage, "user": HumanMessage, "assistant": AIMessage}
 
 
 def _build_prompt(query: str, docs: list[dict]) -> str:
@@ -5184,99 +5248,41 @@ async def stream_rag_chat(
 
     logger.info("Starting RAG chat request.")
 
-    loop = asyncio.get_running_loop()
-    queue: asyncio.Queue = asyncio.Queue()
-
     user_query = messages[-1]["content"]
 
-    def producer():
+    try:
+        logger.info("Running Corrective RAG retrieval.")
 
-        try:
-            logger.info("Running Corrective RAG retrieval.")
+        result = corrective_retrieve(user_query)
 
-            result = corrective_retrieve(user_query)
+        logger.info(
+            "Retrieval completed | decision=%s | avg_score=%.3f | docs=%d",
+            result["decision"],
+            result["avg_score"],
+            len(result["docs"]),
+        )
 
-            logger.info(
-                "Retrieval completed | decision=%s | avg_score=%.3f | docs=%d",
-                result["decision"],
-                result["avg_score"],
-                len(result["docs"]),
-            )
+        augmented = _build_prompt(
+            user_query,
+            result["docs"],
+        )
 
-            augmented = _build_prompt(
-                user_query,
-                result["docs"],
-            )
+        rag_messages = messages[:-1] + [{"role": "user", "content": augmented}]
+        lc_messages = [_ROLE_MAP[m["role"]](content=m["content"]) for m in rag_messages]
 
-            logger.debug("Augmented prompt created.")
+        logger.info("Starting LLM response generation.")
 
-            rag_messages = (
-                messages[:-1]
-                + [{"role": "user", "content": augmented}]
-            )
+        async for chunk in llm.astream(
+            lc_messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        ):
+            if chunk.content:
+                yield chunk.content
 
-            logger.info("Starting LLM response generation.")
-
-            with llm_lock:
-                llm.reset()
-                stream = llm.create_chat_completion(
-                    messages=rag_messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    stream=True,
-                )
-
-                token_count = 0
-
-                for chunk in stream:
-
-                    delta = chunk["choices"][0]["delta"]
-
-                    if "content" in delta:
-                        token_count += 1
-
-                        loop.call_soon_threadsafe(
-                            queue.put_nowait,
-                            delta["content"],
-                        )
-
-            logger.info(
-                "LLM generation completed | streamed_tokens=%d",
-                token_count,
-            )
-
-        except Exception:
-            logger.exception("RAG chat generation failed.")
-
-            loop.call_soon_threadsafe(
-                queue.put_nowait,
-                Exception(),
-            )
-
-        finally:
-            logger.debug("Producer finished.")
-
-            loop.call_soon_threadsafe(
-                queue.put_nowait,
-                _SENTINEL,
-            )
-
-    loop.run_in_executor(None, producer)
-
-    while True:
-
-        item = await queue.get()
-
-        if item is _SENTINEL:
-            logger.info("Streaming completed.")
-            break
-
-        if isinstance(item, Exception):
-            logger.error("Streaming terminated due to server error.")
-            yield "\n\nServer Error"
-            return
-
-        yield item
+    except Exception:
+        logger.exception("RAG chat generation failed.")
+        yield "\n\nServer Error"
 ```
 
 ---
@@ -5573,15 +5579,15 @@ to the console instead of being sent.  Once SMTP_* vars are set in .env the
 real sender activates automatically.
 """
 
-import logging
 import smtplib
 import ssl
 from email.message import EmailMessage
 from typing import Optional
 
 from app.config import settings
+from app.utils.logging_config import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def send_email(
@@ -5603,6 +5609,8 @@ def send_email(
             body,
         )
         return True
+
+    logger.info("Sending email | to=%s | subject=%s", to, subject)
 
     msg = EmailMessage()
     msg["From"] = settings.SMTP_FROM or settings.SMTP_USER
@@ -10890,6 +10898,2193 @@ export function formatRelativeTime(iso) {
 
   return then.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
+
+```
+
+---
+
+## File: `tests\conftest.py`
+
+```python
+"""Root conftest — loaded before any test module.
+
+This file is the single point of control that makes the entire test suite
+dependency-free:
+
+1.  Sets dummy env vars BEFORE any ``app.*`` import so ``Settings()`` doesn't
+    crash on missing required fields.
+2.  Stubs ``sentence_transformers`` in ``sys.modules`` so that
+    ``qdrant_store.py``'s module-level ``get_embedder()`` call doesn't
+    download a ~90 MB model at import time.
+3.  Monkey-patches ``build_langgraph_pool`` to return a ``MagicMock`` so
+    ``db/lifespan.py``'s module-level pool construction doesn't start
+    background threads that try to connect to a non-existent Postgres.
+"""
+import os
+import sys
+import types
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+import pytest
+import pytest_asyncio
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 1. DUMMY ENV VARS — must be set before any `from app.config import settings`
+# ═══════════════════════════════════════════════════════════════════════════
+_DUMMY_ENV = {
+    "DATABASE_URL": "postgresql+asyncpg://test:test@localhost/testdb",
+    "QDRANT_URL": "http://localhost:6333",
+    "QDRANT_API_KEY": "test-qdrant-key",
+    "HF_TOKEN": "test-hf-token",
+    "SECRET_KEY": "test-secret-key-for-jwt-signing-32chars",
+    "SERP_API_KEY": "test-serp-key",
+    "GROQ_API_KEY": "test-groq-key",
+}
+for _k, _v in _DUMMY_ENV.items():
+    os.environ.setdefault(_k, _v)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 2. STUB sentence_transformers
+#    qdrant_store.py calls `embedder = get_embedder()` at module level, which
+#    would load a real SentenceTransformer model. Replace with a fake.
+# ═══════════════════════════════════════════════════════════════════════════
+if not getattr(sys.modules.get("sentence_transformers"), "_is_test_stub", False):
+    import numpy as np
+
+    _fake_st = types.ModuleType("sentence_transformers")
+    _fake_st._is_test_stub = True
+
+    class _FakeSentenceTransformer:
+        """Returns deterministic 384-dim zero vectors — no model download."""
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def encode(self, text, **kwargs):
+            return np.zeros(384)
+
+        def embed_query(self, text):
+            return np.zeros(384).tolist()
+
+    _fake_st.SentenceTransformer = _FakeSentenceTransformer
+    sys.modules["sentence_transformers"] = _fake_st
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 3. PREVENT POOL BACKGROUND THREADS
+#    db/lifespan.py calls `build_langgraph_pool()` at module level, which
+#    creates a real psycopg ConnectionPool that starts a background worker
+#    thread trying to connect to Postgres. Replace with a MagicMock so no
+#    threads are spawned and no connection attempts are made.
+# ═══════════════════════════════════════════════════════════════════════════
+import app.db.pool  # noqa: E402 — safe: pure string computation, no I/O
+app.db.pool.build_langgraph_pool = lambda: MagicMock()  # type: ignore[assignment]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 4. FAKE LLM
+# ═══════════════════════════════════════════════════════════════════════════
+
+class FakeLLM:
+    """Deterministic fake LLM for unit tests.
+
+    Configure per-test by setting attributes on the returned instance::
+
+        fake_llm.response_text = "Custom answer"
+        fake_llm.tool_calls   = [{"name": "save_patient_fact", "args": {...}, "id": "..."}]
+        fake_llm.stream_chunks = ["Hello", " world"]
+        fake_llm.should_error = True   # to test error / sentinel paths
+    """
+
+    def __init__(self):
+        self.response_text = "Test response from fake LLM."
+        self.tool_calls: list | None = None
+        self.stream_chunks = ["Hello", " ", "world"]
+        self.should_error = False
+
+    async def astream(self, messages, **kwargs):
+        if self.should_error:
+            raise RuntimeError("Fake LLM error")
+        for chunk_text in self.stream_chunks:
+            yield SimpleNamespace(content=chunk_text)
+
+    def bind_tools(self, tools):
+        # Return self so .invoke() works the same way whether or not tools
+        # are bound — both the router and biomistral nodes call
+        # `model.invoke(messages)` uniformly.
+        return self
+
+    def invoke(self, messages):
+        if self.should_error:
+            raise RuntimeError("Fake LLM error")
+        from langchain_core.messages import AIMessage
+
+        return AIMessage(
+            content=self.response_text,
+            tool_calls=self.tool_calls or [],
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 5. SKIP live MARKER UNLESS RUN_LIVE_TESTS=1
+# ═══════════════════════════════════════════════════════════════════════════
+
+def pytest_collection_modifyitems(config, items):
+    """Skip @pytest.mark.live tests unless RUN_LIVE_TESTS=1."""
+    if os.environ.get("RUN_LIVE_TESTS") == "1":
+        return
+    skip_live = pytest.mark.skip(reason="Set RUN_LIVE_TESTS=1 to run live tests")
+    for item in items:
+        if "live" in item.keywords:
+            item.add_marker(skip_live)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 6. FIXTURES
+# ═══════════════════════════════════════════════════════════════════════════
+
+@pytest.fixture
+def fake_llm(monkeypatch):
+    """Replace the LLM singletons with a deterministic fake in every module
+    that holds one — both the BioMistral node (``llm``) and the router node
+    (``router_llm``, a ChatGroq bound with tools)."""
+    import importlib
+
+    fake = FakeLLM()
+    for mod_path in [
+        "app.core.llm",
+        "app.services.chat_service",
+        "app.services.rag_chat_service",
+        "app.agent.nodes.biomistral_node",
+    ]:
+        mod = importlib.import_module(mod_path)
+        monkeypatch.setattr(mod, "llm", fake)
+
+    # The router uses its own bound ChatGroq instance — swap it for the fake
+    # so .invoke() runs without a real Groq call.
+    router_mod = importlib.import_module("app.agent.nodes.router_node")
+    monkeypatch.setattr(router_mod, "router_llm", fake)
+    return fake
+
+
+@pytest.fixture
+def fake_qdrant(monkeypatch):
+    """Stub Qdrant ``retrieve`` (as imported in corrective_rag) to return
+    canned high-relevance docs."""
+
+    def _fake_retrieve(query, top_k=5, category=None):
+        return [
+            {"text": "Diabetes is a chronic condition.", "source": "who.int",
+             "category": "endocrine", "score": 0.85},
+            {"text": "Symptoms include excessive thirst.", "source": "mayoclinic.org",
+             "category": "endocrine", "score": 0.72},
+        ]
+
+    monkeypatch.setattr("app.core.rag.corrective_rag.retrieve", _fake_retrieve)
+    return _fake_retrieve
+
+
+@pytest.fixture
+def fake_serpapi(monkeypatch):
+    """Stub SerpAPI ``GoogleSearch`` to avoid real API calls."""
+
+    class _FakeGoogleSearch:
+        def __init__(self, params):
+            self.params = params
+
+        def get_dict(self):
+            return {
+                "organic_results": [
+                    {"snippet": "Web result snippet", "link": "example.com",
+                     "title": "Example"},
+                ]
+            }
+
+    monkeypatch.setattr("app.core.rag.corrective_rag.GoogleSearch", _FakeGoogleSearch)
+    return _FakeGoogleSearch
+
+
+# ── DB fixtures ─────────────────────────────────────────────────────────────
+
+@pytest_asyncio.fixture(scope="session")
+async def db_engine():
+    """Session-scoped in-memory sqlite engine with all tables created.
+
+    Uses ``StaticPool`` so all sessions share a single in-memory connection
+    (aiosqlite in-memory DBs are per-connection by default — without
+    StaticPool each session would get its own empty database).  Tables are
+    created once per session and data is truncated per-test in ``db_session``.
+    """
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy.pool import StaticPool
+    from app.db.base import Base
+    import app.models  # noqa: F401 — registers User/Token/RefreshToken
+
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    yield engine
+    await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def db_session(db_engine):
+    """Per-test async DB session that truncates all tables on teardown."""
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+    from app.db.base import Base
+
+    session_maker = async_sessionmaker(
+        db_engine, expire_on_commit=False, class_=AsyncSession
+    )
+    async with session_maker() as session:
+        yield session
+        # Truncate every table so the next test starts with a clean slate.
+        for table in reversed(Base.metadata.sorted_tables):
+            await session.execute(table.delete())
+        await session.commit()
+
+
+# ── ASGI client ──────────────────────────────────────────────────────────────
+
+@pytest_asyncio.fixture
+async def async_client(db_engine):
+    """``httpx.AsyncClient`` over the FastAPI app.
+
+    The lifespan is NOT triggered (ASGITransport sends only ``http.request``
+    events, not ``lifespan.startup``), so no real Postgres/Qdrant/LLM
+    connections are made on startup.  ``get_db`` is overridden to use the
+    test sqlite engine.
+    """
+    from httpx import AsyncClient, ASGITransport
+    from app.main import app
+    from app.db.session import get_db
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    session_maker = async_sessionmaker(
+        db_engine, expire_on_commit=False, class_=AsyncSession
+    )
+
+    async def get_test_db():
+        async with session_maker() as session:
+            yield session
+
+    app.dependency_overrides[get_db] = get_test_db
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client
+
+    app.dependency_overrides.clear()
+
+
+# ── Auth helpers ─────────────────────────────────────────────────────────────
+
+@pytest_asyncio.fixture
+async def auth_user(db_session):
+    """Create a test user in the DB and return it."""
+    import uuid
+    from app.core.security import hash_password
+    from app.models.user import User
+
+    user = User(
+        id=uuid.uuid4(),
+        username="testuser",
+        email="test@example.com",
+        hashed_password=hash_password("TestPass123!"),
+        role="user",
+        is_active=True,
+        is_verified=True,
+    )
+    db_session.add(user)
+    await db_session.commit()
+    await db_session.refresh(user)
+    return user
+
+
+@pytest.fixture
+def auth_token(auth_user):
+    """JWT for the test user."""
+    from app.core.security import create_access_token
+    return create_access_token(data={"sub": str(auth_user.id)})
+
+
+@pytest.fixture
+def auth_headers(auth_token):
+    """Authorization headers for the test user."""
+    return {"Authorization": f"Bearer {auth_token}"}
+
+
+# ── Agent helpers ────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def fake_store():
+    """In-memory fake of the LangGraph ``PostgresStore`` for tools tests."""
+
+    class _FakeStore:
+        def __init__(self):
+            self._data: dict[tuple, dict[str, dict]] = {}
+
+        def search(self, namespace, query="", limit=5):
+            ns = tuple(namespace)
+            items = [
+                SimpleNamespace(value=v)
+                for v in self._data.get(ns, {}).values()
+            ]
+            return items[:limit]
+
+        def put(self, namespace, key, value):
+            ns = tuple(namespace)
+            self._data.setdefault(ns, {})[key] = value
+
+    return _FakeStore()
+
+
+@pytest.fixture
+def sample_state():
+    """Factory for ``AgentState`` dicts — accepts overrides."""
+
+    def _make(**kwargs):
+        base = {
+            "patient_id": "test-patient-01",
+            "ocr_context": "",
+            "tool_results": "",
+            "messages": [],
+            "answer": "",
+            "final_response": "",
+            "raw_input": "What is diabetes?",
+            "detected_lang": "en",
+            "needs_rag": False,
+            "retrieval_decision": "",
+            "retrieved_docs": [],
+            "saved_memory": False,
+        }
+        base.update(kwargs)
+        return base
+
+    return _make
+
+```
+
+---
+
+## File: `tests\agent\test_biomistral_node.py`
+
+```python
+"""Unit tests for app/agent/nodes/biomistral_node.py.
+
+Covers:
+- answer / final_response set from the local model's response
+- empty model response → fallback message
+- tool_results context is folded into the system prompt
+- ocr_context is folded into the system prompt (and truncated)
+- only the final AIMessage is stored (the user message is the router's job)
+"""
+import pytest
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+
+from app.agent.nodes.biomistral_node import _OCR_CHAR_LIMIT, biomistral_node
+
+
+# ── answer / final_response ──────────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_biomistral_sets_answer_from_response(fake_llm, sample_state):
+    fake_llm.response_text = "You likely have a common cold."
+    fake_llm.tool_calls = None
+
+    state = sample_state(raw_input="I have a runny nose")
+    result = biomistral_node(state)
+
+    assert result["answer"] == "You likely have a common cold."
+    assert result["final_response"] == "You likely have a common cold."
+
+
+@pytest.mark.unit
+def test_biomistral_empty_response_gets_fallback(fake_llm, sample_state):
+    fake_llm.response_text = ""
+    fake_llm.tool_calls = None
+
+    state = sample_state()
+    result = biomistral_node(state)
+
+    assert "wasn't able to generate" in result["answer"]
+    assert result["final_response"] == result["answer"]
+
+
+@pytest.mark.unit
+def test_biomistral_stores_only_final_ai_message(fake_llm, sample_state):
+    """The router persists the user message; BioMistral stores only its own
+    final AIMessage, completing the conversation pair without duplicating
+    the HumanMessage."""
+    fake_llm.response_text = "final answer"
+    fake_llm.tool_calls = None
+
+    state = sample_state(raw_input="hi")
+    result = biomistral_node(state)
+
+    assert len(result["messages"]) == 1
+    assert isinstance(result["messages"][0], AIMessage)
+    assert result["messages"][0].content == "final answer"
+
+
+# ── context folding ──────────────────────────────────────────────────────────
+
+def _capture_system(fake_llm):
+    """Replace fake_llm.invoke so it records the SystemMessage it receives."""
+    captured = {}
+    orig = fake_llm.invoke
+
+    def _cap(messages):
+        captured["system"] = next(
+            (m for m in messages if isinstance(m, SystemMessage)), None
+        )
+        return orig(messages)
+
+    fake_llm.invoke = _cap
+    return captured
+
+
+@pytest.mark.unit
+def test_biomistral_includes_tool_results(fake_llm, sample_state):
+    fake_llm.response_text = "ok"
+    fake_llm.tool_calls = None
+    captured = _capture_system(fake_llm)
+
+    state = sample_state(tool_results="--- Context from tool [retrieve_medical_knowledge] ---\nDiabetes info")
+    biomistral_node(state)
+
+    assert captured["system"] is not None
+    assert "Diabetes info" in captured["system"].content
+
+
+@pytest.mark.unit
+def test_biomistral_includes_ocr_context(fake_llm, sample_state):
+    fake_llm.response_text = "ok"
+    fake_llm.tool_calls = None
+    captured = _capture_system(fake_llm)
+
+    state = sample_state(ocr_context="Patient: John Doe\nDiagnosis: Hypertension")
+    biomistral_node(state)
+
+    assert "Hypertension" in captured["system"].content
+
+
+@pytest.mark.unit
+def test_biomistral_truncates_long_ocr(fake_llm, sample_state):
+    fake_llm.response_text = "ok"
+    fake_llm.tool_calls = None
+    captured = _capture_system(fake_llm)
+
+    long_ocr = "Z" * 5000
+    state = sample_state(ocr_context=long_ocr)
+    biomistral_node(state)
+
+    # Only _OCR_CHAR_LIMIT chars of the OCR text should reach the prompt.
+    assert captured["system"].content.count("Z") <= _OCR_CHAR_LIMIT
+
+
+@pytest.mark.unit
+def test_biomistral_no_context_uses_placeholders(fake_llm, sample_state):
+    """With no OCR and no tool results, the prompt carries the 'no context'
+    placeholders rather than empty strings."""
+    fake_llm.response_text = "ok"
+    fake_llm.tool_calls = None
+    captured = _capture_system(fake_llm)
+
+    state = sample_state(ocr_context="", tool_results="")
+    biomistral_node(state)
+
+    system_text = captured["system"].content
+    assert "No OCR text attached." in system_text
+    assert "No external context retrieved." in system_text
+
+```
+
+---
+
+## File: `tests\agent\test_graph.py`
+
+```python
+"""Unit tests for app/agent/graph.py — routing and tool execution."""
+import pytest
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+from app.agent.graph import _extract_tool_metadata, _route_after_router, _run_tools
+
+
+# ── _route_after_router ──────────────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_route_to_tools_when_tool_calls_present():
+    """When the last message is an AIMessage with tool_calls → route to 'tools'."""
+    state = {
+        "messages": [
+            HumanMessage(content="hello"),
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "fetch_patient_facts", "args": {}, "id": "1"}],
+            ),
+        ]
+    }
+    assert _route_after_router(state) == "tools"
+
+
+@pytest.mark.unit
+def test_route_to_biomistral_when_no_tool_calls(sample_state):
+    """When the last message is a plain AIMessage (no tool_calls) → biomistral."""
+    state = sample_state(messages=[
+        HumanMessage(content="hello"),
+        AIMessage(content="hi there"),
+    ])
+    assert _route_after_router(state) == "biomistral"
+
+
+@pytest.mark.unit
+def test_route_to_biomistral_when_last_is_human():
+    """No-tool turn: the router stored only the user message, so the last
+    message is a HumanMessage → straight to BioMistral."""
+    state = {"messages": [HumanMessage(content="hello")]}
+    assert _route_after_router(state) == "biomistral"
+
+
+@pytest.mark.unit
+def test_route_to_biomistral_on_empty_history():
+    """Edge case: no messages at all → BioMistral (no tools to run)."""
+    assert _route_after_router({"messages": []}) == "biomistral"
+
+
+# ── _extract_tool_metadata ────────────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_extract_metadata_from_rag_tool_message():
+    """needs_rag / retrieval_decision / sources are parsed from a
+    retrieve_medical_knowledge ToolMessage."""
+    tool_msg = ToolMessage(
+        content=(
+            "[Retrieval decision: correct]\n\n"
+            "[who.int] Diabetes is a chronic condition.\n"
+            "[mayoclinic.org] Symptoms include thirst.\n"
+        ),
+        tool_call_id="tc1",
+        name="retrieve_medical_knowledge",
+    )
+    meta = _extract_tool_metadata([tool_msg])
+
+    assert meta["needs_rag"] is True
+    assert meta["retrieval_decision"] == "correct"
+    assert meta["retrieved_docs"][0]["source"] == "who.int"
+    assert "Diabetes is a chronic condition" in meta["tool_results"]
+    assert meta["saved_memory"] is False
+
+
+@pytest.mark.unit
+def test_extract_metadata_detects_saved_memory():
+    meta = _extract_tool_metadata([
+        ToolMessage(
+            content="Saved to patient record: fever (ongoing)",
+            tool_call_id="tc1",
+            name="save_patient_fact",
+        )
+    ])
+    assert meta["saved_memory"] is True
+    assert meta["needs_rag"] is False
+
+
+@pytest.mark.unit
+def test_extract_metadata_empty():
+    meta = _extract_tool_metadata([])
+    assert meta["tool_results"] == ""
+    assert meta["needs_rag"] is False
+    assert meta["saved_memory"] is False
+    assert meta["retrieval_decision"] == ""
+    assert meta["retrieved_docs"] == []
+
+
+# ── _run_tools ───────────────────────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_run_tools_executes_and_extracts(monkeypatch, fake_store):
+    """_run_tools invokes the ToolNode, appends ToolMessages, and folds the
+    results into tool_results + metadata."""
+    from app.agent import graph as graph_mod
+    from app.agent import tools as tools_mod
+    monkeypatch.setattr(tools_mod, "store", fake_store)
+
+    def _fake_tool_node_invoke(state):
+        tool_msg = ToolMessage(
+            content="[Retrieval decision: correct]\n\n[who.int] Diabetes info",
+            tool_call_id="call_1",
+            name="retrieve_medical_knowledge",
+        )
+        state["messages"] = state["messages"] + [tool_msg]
+        return state
+
+    monkeypatch.setattr(graph_mod._tool_node, "invoke", _fake_tool_node_invoke)
+
+    ai_msg = AIMessage(
+        content="",
+        tool_calls=[{
+            "name": "retrieve_medical_knowledge",
+            "args": {"query": "diabetes"},
+            "id": "call_1",
+        }],
+    )
+    state = {
+        "messages": [HumanMessage(content="what is diabetes?"), ai_msg],
+        "patient_id": "p1",
+    }
+    result = _run_tools(state)
+
+    # ToolMessage appended
+    assert any(isinstance(m, ToolMessage) for m in result["messages"])
+    # Metadata folded in
+    assert result["needs_rag"] is True
+    assert result["retrieval_decision"] == "correct"
+    assert "Diabetes info" in result["tool_results"]
+
+```
+
+---
+
+## File: `tests\agent\test_router_node.py`
+
+```python
+"""Unit tests for app/agent/nodes/router_node.py.
+
+Covers:
+- no-tool path: stores only the user message (no ghost assistant turn)
+- tool-call path: stores user message + AIMessage carrying tool_calls
+- current input is appended to the LLM call when history doesn't end on one
+- patient_id is interpolated into the system prompt
+"""
+import pytest
+from langchain_core.messages import AIMessage, HumanMessage
+
+from app.agent.nodes.router_node import ROUTER_SYSTEM_PROMPT, router_node
+
+
+# ── no-tool path ──────────────────────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_router_no_tools_stores_only_user_message(fake_llm, sample_state):
+    """When the router decides no tools are needed, only the user's
+    HumanMessage is persisted — no intermediate assistant text."""
+    fake_llm.response_text = "irrelevant"
+    fake_llm.tool_calls = None
+
+    state = sample_state(raw_input="Hello there")
+    result = router_node(state)
+
+    assert len(result["messages"]) == 1
+    assert isinstance(result["messages"][0], HumanMessage)
+    assert result["messages"][0].content == "Hello there"
+    # No answer / final_response set by the router
+    assert "answer" not in result
+    assert "final_response" not in result
+
+
+# ── tool-call path ────────────────────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_router_tool_call_stores_user_and_ai(fake_llm, sample_state):
+    """When the router emits tool_calls, both the user message and the
+    AIMessage(tool_calls) are stored so the ToolNode can execute them."""
+    fake_llm.tool_calls = [{"name": "save_patient_fact", "args": {}, "id": "tc1"}]
+
+    state = sample_state(raw_input="I have a fever")
+    result = router_node(state)
+
+    assert len(result["messages"]) == 2
+    assert isinstance(result["messages"][0], HumanMessage)
+    assert result["messages"][0].content == "I have a fever"
+    assert isinstance(result["messages"][1], AIMessage)
+    assert result["messages"][1].tool_calls  # truthy
+
+
+# ── current input appended to the LLM call ───────────────────────────────────
+
+@pytest.mark.unit
+def test_router_appends_input_when_history_ends_on_ai(fake_llm, sample_state):
+    """At the start of a turn the history ends on an assistant message, so
+    the router appends the current input to the messages it sends to the LLM.
+    The fake LLM records the last message it was invoked with."""
+    fake_llm.tool_calls = None
+    captured = {}
+    orig_invoke = fake_llm.invoke
+
+    def _capture(messages):
+        captured["last"] = messages[-1]
+        return orig_invoke(messages)
+
+    fake_llm.invoke = _capture
+
+    state = sample_state(
+        raw_input="new question",
+        messages=[HumanMessage(content="old q"), AIMessage(content="old a")],
+    )
+    router_node(state)
+
+    assert isinstance(captured["last"], HumanMessage)
+    assert captured["last"].content == "new question"
+
+
+@pytest.mark.unit
+def test_router_does_not_duplicate_input_when_history_ends_on_human(
+    fake_llm, sample_state,
+):
+    """If the last history message is already the current user input, the
+    router must not append a second copy."""
+    fake_llm.tool_calls = None
+    captured = {}
+    orig_invoke = fake_llm.invoke
+
+    def _capture(messages):
+        captured["last"] = messages[-1]
+        return orig_invoke(messages)
+
+    fake_llm.invoke = _capture
+
+    state = sample_state(
+        raw_input="same question",
+        messages=[HumanMessage(content="same question")],
+    )
+    router_node(state)
+
+    assert captured["last"].content == "same question"
+
+
+# ── system prompt ─────────────────────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_router_system_prompt_interpolates_patient_id(fake_llm, sample_state):
+    fake_llm.tool_calls = None
+    state = sample_state(patient_id="patient-42", raw_input="hi")
+    router_node(state)
+    assert "patient-42" in ROUTER_SYSTEM_PROMPT.format(patient_id="patient-42")
+
+
+@pytest.mark.unit
+def test_router_empty_history_appends_input(fake_llm, sample_state):
+    """First turn ever — history is empty, router still sends the input."""
+    fake_llm.tool_calls = None
+    captured = {}
+    orig_invoke = fake_llm.invoke
+
+    def _capture(messages):
+        captured["last"] = messages[-1]
+        return orig_invoke(messages)
+
+    fake_llm.invoke = _capture
+
+    state = sample_state(raw_input="first message", messages=[])
+    router_node(state)
+
+    assert isinstance(captured["last"], HumanMessage)
+    assert captured["last"].content == "first message"
+
+```
+
+---
+
+## File: `tests\agent\test_tools.py`
+
+```python
+"""Unit tests for app/agent/tools.py — all four LangGraph tools."""
+import pytest
+
+from app.agent.tools import (
+    TOOLS,
+    fetch_patient_facts,
+    retrieve_medical_knowledge,
+    save_emotional_state,
+    save_patient_fact,
+)
+
+
+# ── TOOLS list ───────────────────────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_tools_list_has_four():
+    assert len(TOOLS) == 4
+    names = {t.name for t in TOOLS}
+    assert names == {
+        "fetch_patient_facts",
+        "retrieve_medical_knowledge",
+        "save_patient_fact",
+        "save_emotional_state",
+    }
+
+
+# ── fetch_patient_facts ─────────────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_fetch_patient_facts_returns_history(monkeypatch, fake_store):
+    """With facts in the store, returns formatted history lines."""
+    fake_store.put(("patient_facts", "p1"), "key1", {
+        "symptom": "fever", "onset": "3 days ago", "status": "ongoing",
+    })
+    monkeypatch.setattr("app.agent.tools.store", fake_store)
+
+    result = fetch_patient_facts.invoke({"patient_id": "p1", "query": "fever"})
+    assert "fever" in result
+    assert "Known patient history" in result
+
+
+@pytest.mark.unit
+def test_fetch_patient_facts_no_history(monkeypatch, fake_store):
+    """Empty store → 'No relevant patient history found.'"""
+    monkeypatch.setattr("app.agent.tools.store", fake_store)
+    result = fetch_patient_facts.invoke({"patient_id": "noone", "query": "x"})
+    assert "No relevant patient history" in result
+
+
+@pytest.mark.unit
+def test_fetch_patient_facts_store_none(monkeypatch):
+    """When store is None → graceful message, no crash."""
+    monkeypatch.setattr("app.agent.tools.store", None)
+    result = fetch_patient_facts.invoke({"patient_id": "p1", "query": "x"})
+    assert "not available" in result.lower()
+
+
+# ── retrieve_medical_knowledge ──────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_retrieve_medical_knowledge_success(monkeypatch, fake_qdrant):
+    """With mocked Qdrant returning high-score docs → formatted result."""
+    result = retrieve_medical_knowledge.invoke({"query": "diabetes"})
+    assert "Retrieval decision" in result
+    assert "who.int" in result  # from fake_qdrat canned docs
+
+
+@pytest.mark.unit
+def test_retrieve_medical_knowledge_no_docs(monkeypatch):
+    """When retrieve returns empty → 'No relevant documents found.'"""
+    monkeypatch.setattr("app.agent.tools.corrective_retrieve", lambda *a, **k: {
+        "docs": [], "decision": "incorrect", "avg_score": 0.0,
+    })
+    result = retrieve_medical_knowledge.invoke({"query": "obscure"})
+    assert "No relevant documents" in result
+
+
+@pytest.mark.unit
+def test_retrieve_medical_knowledge_handles_error(monkeypatch):
+    """If corrective_retrieve raises → error string, not exception."""
+    monkeypatch.setattr(
+        "app.agent.tools.corrective_retrieve",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    result = retrieve_medical_knowledge.invoke({"query": "x"})
+    assert "Error" in result
+
+
+# ── save_patient_fact ────────────────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_save_patient_fact_success(monkeypatch, fake_store):
+    monkeypatch.setattr("app.agent.tools.store", fake_store)
+    result = save_patient_fact.invoke({
+        "patient_id": "p1", "symptom": "headache",
+        "onset": "today", "status": "mild",
+        "source_message": "I have a headache",
+    })
+    assert "headache" in result
+    # Verify it was persisted
+    items = fake_store.search(("patient_facts", "p1"))
+    assert any(item.value.get("symptom") == "headache" for item in items)
+
+
+@pytest.mark.unit
+def test_save_patient_fact_store_none(monkeypatch):
+    monkeypatch.setattr("app.agent.tools.store", None)
+    result = save_patient_fact.invoke({
+        "patient_id": "p1", "symptom": "x", "onset": "y",
+        "status": "z", "source_message": "m",
+    })
+    assert "not available" in result.lower()
+
+
+# ── save_emotional_state ────────────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_save_emotional_state_success(monkeypatch, fake_store):
+    monkeypatch.setattr("app.agent.tools.store", fake_store)
+    result = save_emotional_state.invoke({
+        "patient_id": "p1", "emotion": "anxiety",
+        "intensity": "high", "trigger": "diagnosis",
+        "source_message": "I'm scared",
+    })
+    assert "anxiety" in result
+    items = fake_store.search(("patient_emotions", "p1"))
+    assert any(item.value.get("emotion") == "anxiety" for item in items)
+
+
+@pytest.mark.unit
+def test_save_emotional_state_store_none(monkeypatch):
+    monkeypatch.setattr("app.agent.tools.store", None)
+    result = save_emotional_state.invoke({
+        "patient_id": "p1", "emotion": "fear", "intensity": "low",
+        "trigger": "x", "source_message": "m",
+    })
+    assert "not available" in result.lower()
+
+```
+
+---
+
+## File: `tests\core\test_corrective_rag.py`
+
+```python
+"""Unit tests for app/core/rag/corrective_rag.py.
+
+Covers:
+- evaluate_relevance thresholds (correct / ambiguous / incorrect)
+- web_search_fallback with mocked SerpAPI
+- corrective_retrieve pipeline (retrieve → evaluate → correct)
+"""
+import pytest
+
+from app.core.rag.corrective_rag import (
+    AMBIGUOUS_THRESHOLD,
+    RELEVANCE_THRESHOLD,
+    corrective_retrieve,
+    evaluate_relevance,
+    web_search_fallback,
+)
+
+
+# ── evaluate_relevance ───────────────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_evaluate_relevance_empty_docs():
+    decision, avg = evaluate_relevance([])
+    assert decision == "incorrect"
+    assert avg == 0.0
+
+
+@pytest.mark.unit
+def test_evaluate_relevance_correct():
+    """max_score >= RELEVANCE_THRESHOLD → correct"""
+    docs = [
+        {"score": 0.6},
+        {"score": 0.4},
+    ]
+    decision, avg = evaluate_relevance(docs)
+    assert decision == "correct"
+    assert avg == 0.5
+
+
+@pytest.mark.unit
+def test_evaluate_relevance_ambiguous():
+    """max < RELEVANCE_THRESHOLD but avg >= AMBIGUOUS_THRESHOLD → ambiguous"""
+    docs = [
+        {"score": 0.4},
+        {"score": 0.36},
+    ]
+    decision, avg = evaluate_relevance(docs)
+    assert decision == "ambiguous"
+    assert abs(avg - 0.38) < 0.001
+
+
+@pytest.mark.unit
+def test_evaluate_relevance_incorrect():
+    """max < RELEVANCE_THRESHOLD and avg < AMBIGUOUS_THRESHOLD → incorrect"""
+    docs = [
+        {"score": 0.2},
+        {"score": 0.1},
+    ]
+    decision, avg = evaluate_relevance(docs)
+    assert decision == "incorrect"
+    assert avg == pytest.approx(0.15)
+
+
+@pytest.mark.unit
+def test_evaluate_relevance_single_doc_correct():
+    docs = [{"score": 0.9}]
+    decision, _ = evaluate_relevance(docs)
+    assert decision == "correct"
+
+
+@pytest.mark.unit
+def test_thresholds_are_sane():
+    """RELEVANCE must be strictly greater than AMBIGUOUS."""
+    assert RELEVANCE_THRESHOLD > AMBIGUOUS_THRESHOLD
+    assert RELEVANCE_THRESHOLD == 0.5
+    assert AMBIGUOUS_THRESHOLD == 0.35
+
+
+# ── web_search_fallback ──────────────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_web_search_fallback_returns_docs(fake_serpapi):
+    docs = web_search_fallback("diabetes symptoms")
+    assert len(docs) >= 1
+    assert all("text" in d and "source" in d for d in docs)
+    assert all(d["category"] == "web" for d in docs)
+    assert all(d["score"] == 0.5 for d in docs)
+
+
+@pytest.mark.unit
+def test_web_search_fallback_handles_error(monkeypatch):
+    """If GoogleSearch raises, fallback returns [] (caught, not propagated)."""
+    class _Boom:
+        def __init__(self, params):
+            raise RuntimeError("SerpAPI down")
+
+    monkeypatch.setattr("app.core.rag.corrective_rag.GoogleSearch", _Boom)
+    assert web_search_fallback("anything") == []
+
+
+# ── corrective_retrieve ──────────────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_corrective_retrieve_correct(fake_qdrant):
+    """High-score docs → 'correct', no web search."""
+    result = corrective_retrieve("What is diabetes?")
+    assert result["decision"] == "correct"
+    assert len(result["docs"]) <= 5
+    assert result["avg_score"] > 0
+
+
+@pytest.mark.unit
+def test_corrective_retrieve_incorrect_triggers_web_search(monkeypatch, fake_serpapi):
+    """Low-score docs → 'incorrect', web search prepended."""
+    low_docs = [{"text": "irrelevant", "source": "x", "category": "y", "score": 0.1}]
+    monkeypatch.setattr("app.core.rag.corrective_rag.retrieve", lambda *a, **k: low_docs)
+    result = corrective_retrieve("obscure query")
+    assert result["decision"] == "incorrect"
+    # Web results (category="web") should be prepended
+    web_docs = [d for d in result["docs"] if d.get("category") == "web"]
+    assert len(web_docs) >= 1
+
+
+@pytest.mark.unit
+def test_corrective_retrieve_ambiguous_appends_web_search(monkeypatch, fake_serpapi):
+    """Ambiguous scores → web search appended after Qdrant docs."""
+    mid_docs = [{"text": "partial", "source": "q", "category": "c", "score": 0.36}]
+    monkeypatch.setattr("app.core.rag.corrective_rag.retrieve", lambda *a, **k: mid_docs)
+    result = corrective_retrieve("partial query")
+    assert result["decision"] == "ambiguous"
+    # Web results should be present
+    web_docs = [d for d in result["docs"] if d.get("category") == "web"]
+    assert len(web_docs) >= 1
+
+
+@pytest.mark.unit
+def test_corrective_retrieve_caps_at_five_docs(fake_qdrant, fake_serpapi):
+    result = corrective_retrieve("query")
+    assert len(result["docs"]) <= 5
+
+
+@pytest.mark.unit
+def test_corrective_retrieve_returns_avg_score(fake_qdrant):
+    result = corrective_retrieve("diabetes")
+    assert "avg_score" in result
+    assert isinstance(result["avg_score"], float)
+
+```
+
+---
+
+## File: `tests\core\test_email.py`
+
+```python
+"""Unit tests for app/utils/email.py — dev-mode logging + SMTP path."""
+import pytest
+
+from app.utils.email import send_email
+
+
+@pytest.mark.unit
+def test_send_email_dev_mode_returns_true(monkeypatch):
+    """When SMTP_HOST is empty, email is logged to console and returns True."""
+    monkeypatch.setattr("app.utils.email.settings.SMTP_HOST", "")
+    assert send_email("user@example.com", "Test", "Body text") is True
+
+
+@pytest.mark.unit
+def test_send_email_smtp_success(monkeypatch):
+    """When SMTP is configured, sends via smtplib and returns True."""
+    monkeypatch.setattr("app.utils.email.settings.SMTP_HOST", "smtp.example.com")
+    monkeypatch.setattr("app.utils.email.settings.SMTP_PORT", 587)
+    monkeypatch.setattr("app.utils.email.settings.SMTP_TLS", True)
+    monkeypatch.setattr("app.utils.email.settings.SMTP_USER", "user")
+    monkeypatch.setattr("app.utils.email.settings.SMTP_PASSWORD", "pass")
+    monkeypatch.setattr("app.utils.email.settings.SMTP_FROM", "from@example.com")
+
+    sent = {}
+
+    class _FakeSMTP:
+        def __init__(self, host, port):
+            pass
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+        def starttls(self, context=None):
+            pass
+        def login(self, user, pw):
+            pass
+        def send_message(self, msg):
+            sent["subject"] = msg["Subject"]
+            sent["to"] = msg["To"]
+
+    monkeypatch.setattr("app.utils.email.smtplib.SMTP", _FakeSMTP)
+    assert send_email("to@example.com", "Hello", "Body") is True
+    assert sent["subject"] == "Hello"
+    assert sent["to"] == "to@example.com"
+
+
+@pytest.mark.unit
+def test_send_email_smtp_failure_returns_false(monkeypatch):
+    """When SMTP sending fails, returns False (not raises)."""
+    monkeypatch.setattr("app.utils.email.settings.SMTP_HOST", "smtp.example.com")
+    monkeypatch.setattr("app.utils.email.settings.SMTP_PORT", 587)
+    monkeypatch.setattr("app.utils.email.settings.SMTP_TLS", False)
+    monkeypatch.setattr("app.utils.email.settings.SMTP_USER", "")
+    monkeypatch.setattr("app.utils.email.settings.SMTP_PASSWORD", "")
+
+    class _BoomSMTP:
+        def __init__(self, host, port):
+            raise ConnectionRefusedError("no SMTP")
+
+    monkeypatch.setattr("app.utils.email.smtplib.SMTP", _BoomSMTP)
+    assert send_email("to@example.com", "Subject", "Body") is False
+
+
+@pytest.mark.unit
+def test_send_email_with_reply_to(monkeypatch):
+    """reply_to adds a Reply-To header."""
+    monkeypatch.setattr("app.utils.email.settings.SMTP_HOST", "")
+
+    # In dev mode, just verify it doesn't crash and returns True
+    assert send_email(
+        "to@example.com", "Sub", "Body",
+        reply_to="reply@example.com",
+    ) is True
+
+```
+
+---
+
+## File: `tests\core\test_ocr.py`
+
+```python
+"""Unit tests for app/core/rag/ocr.py — OCR extraction with mocked pytesseract."""
+import pytest
+
+from app.core.rag.ocr import extract_text_from_base64
+
+
+@pytest.mark.unit
+def test_ocr_empty_string_returns_empty():
+    assert extract_text_from_base64("") == ""
+
+
+@pytest.mark.unit
+def test_ocr_none_returns_empty():
+    assert extract_text_from_base64(None) == ""
+
+
+@pytest.mark.unit
+def test_ocr_extracts_text(monkeypatch):
+    """With mocked pytesseract and Image.open, returns the extracted text."""
+    from types import SimpleNamespace
+    monkeypatch.setattr("app.core.rag.ocr.Image.open", lambda buf: SimpleNamespace(size=(1,1), mode="RGB"))
+    monkeypatch.setattr("app.core.rag.ocr.pytesseract.image_to_string", lambda img: "Diagnosis: Hypertension")
+
+    result = extract_text_from_base64("aGVsbG8=")  # valid base64
+    assert result == "Diagnosis: Hypertension"
+
+
+@pytest.mark.unit
+def test_ocr_handles_invalid_base64():
+    """Invalid base64 should not raise — returns empty string."""
+    result = extract_text_from_base64("!!!not-base64!!!")
+    assert result == ""
+
+
+@pytest.mark.unit
+def test_ocr_handles_pytesseract_error(monkeypatch):
+    """If pytesseract raises, the error is caught and empty string returned."""
+    def _boom(img):
+        raise RuntimeError("tesseract not installed")
+
+    monkeypatch.setattr("app.core.rag.ocr.pytesseract.image_to_string", _boom)
+    assert extract_text_from_base64("aGVsbG8=") == ""
+
+```
+
+---
+
+## File: `tests\core\test_password_policy.py`
+
+```python
+"""Unit tests for app/core/password_policy.py — every rule as parametrized cases."""
+import pytest
+
+from app.core.password_policy import (
+    COMMON_PASSWORDS,
+    MAX_LENGTH,
+    MIN_LENGTH,
+    PasswordError,
+    validate_password,
+)
+
+# ── Helper ───────────────────────────────────────────────────────────────────
+
+def _codes(errors: list[PasswordError]) -> set[str]:
+    return {e.code for e in errors}
+
+
+VALID = "Str0ng!Pass"  # meets every rule
+
+
+# ── Happy path ───────────────────────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_valid_password_returns_no_errors():
+    assert validate_password(VALID) == []
+
+
+# ── Length ───────────────────────────────────────────────────────────────────
+
+@pytest.mark.unit
+@pytest.mark.parametrize("pw", ["Ab1!", "Ab1!Ab", "Aa1!aa"])  # all < 8 chars
+def test_too_short(pw):
+    errors = validate_password(pw)
+    assert "too_short" in _codes(errors)
+
+
+@pytest.mark.unit
+def test_too_long():
+    pw = "A" + "a1!" * 43 + "X"  # 130 chars
+    assert "too_long" in _codes(validate_password(pw))
+
+
+@pytest.mark.unit
+def test_exactly_min_length_ok():
+    pw = "Abcde1!"  # 7 → needs 8
+    assert "too_short" in _codes(validate_password(pw))
+    pw2 = "Abcde1!x"  # 8
+    assert "too_short" not in _codes(validate_password(pw2))
+
+
+# ── Case rules ───────────────────────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_missing_uppercase():
+    errors = validate_password("lowercase1!")
+    assert "missing_uppercase" in _codes(errors)
+
+
+@pytest.mark.unit
+def test_missing_lowercase():
+    errors = validate_password("UPPERCASE1!")
+    assert "missing_lowercase" in _codes(errors)
+
+
+# ── Digit ─────────────────────────────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_missing_digit():
+    errors = validate_password("NoDigits!!")
+    assert "missing_digit" in _codes(errors)
+
+
+# ── Special char ──────────────────────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_missing_special():
+    errors = validate_password("NoSpecial1")
+    assert "missing_special" in _codes(errors)
+
+
+# ── Common-password blocklist ─────────────────────────────────────────────────
+
+# Only entries whose .lower() form is also in the set get caught by the
+# case-insensitive check.  "P@ssw0rd" lowercases to "p@ssw0rd" which is NOT
+# in the set, so it slips through — a known limitation.
+_CATCHABLE = [pw for pw in COMMON_PASSWORDS if pw.lower() in COMMON_PASSWORDS]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("pw", sorted(_CATCHABLE))
+def test_common_passwords_rejected(pw):
+    """Every catchable entry in the blocklist should trigger common_password."""
+    errors = validate_password(pw)
+    # Some common passwords also fail other rules (too short, missing case,
+    # etc.) — but they MUST at least trigger common_password.
+    assert "common_password" in _codes(errors)
+
+
+@pytest.mark.unit
+def test_common_password_case_insensitive():
+    """Blocklist check is .lower()'d so mixed case shouldn't bypass it."""
+    assert "common_password" in _codes(validate_password("PASSWORD123"))
+
+
+# ── Multiple violations at once ───────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_multiple_violations():
+    errors = validate_password("abc")
+    codes = _codes(errors)
+    assert "too_short" in codes
+    assert "missing_uppercase" in codes
+    assert "missing_digit" in codes
+    assert "missing_special" in codes
+
+
+@pytest.mark.unit
+def test_error_repr():
+    err = PasswordError("too_short", "too short")
+    assert "too_short" in repr(err)
+
+```
+
+---
+
+## File: `tests\core\test_schemas.py`
+
+```python
+"""Unit tests for Pydantic schemas — validation errors for malformed requests."""
+import pytest
+from pydantic import ValidationError
+
+from app.schemas.agent import AgentRequest, AgentResponse
+from app.schemas.auth import LoginRequest, RegisterRequest
+from app.schemas.chat import ChatRequest, ChatMessage
+
+
+# ── RegisterRequest ──────────────────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_register_valid():
+    req = RegisterRequest(
+        username="alice", email="alice@example.com", password="Str0ng!Pass"
+    )
+    assert req.username == "alice"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad_pw", [
+    "short",            # too short, missing rules
+    "alllowercase1!",   # missing uppercase
+    "ALLUPPERCASE1!",   # missing lowercase
+    "NoDigits!!",       # missing digit
+    "NoSpecial1",       # missing special char
+    "password",         # common password (also short)
+])
+def test_register_rejects_weak_password(bad_pw):
+    with pytest.raises(ValidationError) as exc:
+        RegisterRequest(
+            username="bob", email="bob@example.com", password=bad_pw
+        )
+    assert exc.value.error_count() >= 1
+
+
+@pytest.mark.unit
+def test_register_username_too_short():
+    with pytest.raises(ValidationError):
+        RegisterRequest(
+            username="ab", email="ab@example.com", password="Str0ng!Pass"
+        )
+
+
+@pytest.mark.unit
+def test_register_username_too_long():
+    with pytest.raises(ValidationError):
+        RegisterRequest(
+            username="x" * 51, email="ab@example.com", password="Str0ng!Pass"
+        )
+
+
+@pytest.mark.unit
+def test_register_invalid_email():
+    with pytest.raises(ValidationError):
+        RegisterRequest(
+            username="bob", email="not-an-email", password="Str0ng!Pass"
+        )
+
+
+# ── LoginRequest ─────────────────────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_login_valid():
+    req = LoginRequest(username="alice", password="anything")
+    assert req.username == "alice"
+
+
+@pytest.mark.unit
+def test_login_empty_username():
+    with pytest.raises(ValidationError):
+        LoginRequest(username="", password="x")
+
+
+@pytest.mark.unit
+def test_login_empty_password():
+    with pytest.raises(ValidationError):
+        LoginRequest(username="alice", password="")
+
+
+# ── ChatMessage / ChatRequest ────────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_chat_request_valid():
+    req = ChatRequest(
+        messages=[ChatMessage(role="user", content="hello")],
+        temperature=0.5,
+        max_tokens=100,
+    )
+    assert req.messages[0].content == "hello"
+
+
+@pytest.mark.unit
+def test_chat_request_invalid_role():
+    with pytest.raises(ValidationError):
+        ChatMessage(role="invalid_role", content="hello")
+
+
+@pytest.mark.unit
+def test_chat_request_empty_content():
+    with pytest.raises(ValidationError):
+        ChatMessage(role="user", content="")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("temp", [-0.1, 2.1, 3.0])
+def test_chat_request_temperature_out_of_range(temp):
+    with pytest.raises(ValidationError):
+        ChatRequest(
+            messages=[ChatMessage(role="user", content="hi")],
+            temperature=temp,
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("tokens", [0, -1, -100])
+def test_chat_request_max_tokens_must_be_positive(tokens):
+    with pytest.raises(ValidationError):
+        ChatRequest(
+            messages=[ChatMessage(role="user", content="hi")],
+            max_tokens=tokens,
+        )
+
+
+# ── AgentRequest / AgentResponse ─────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_agent_request_defaults():
+    req = AgentRequest(patient_id="p1")
+    assert req.query == ""
+    assert req.image_base64 is None
+    assert req.thread_id is None
+
+
+@pytest.mark.unit
+def test_agent_request_missing_patient_id():
+    with pytest.raises(ValidationError):
+        AgentRequest()
+
+
+@pytest.mark.unit
+def test_agent_response_roundtrip():
+    resp = AgentResponse(
+        answer="hello",
+        detected_lang="en",
+        needs_rag=False,
+        save_memory=False,
+    )
+    assert resp.sources == []
+    assert resp.retrieval_decision is None
+
+```
+
+---
+
+## File: `tests\core\test_security.py`
+
+```python
+"""Unit tests for app/core/security.py — password hashing, JWT creation/decoding."""
+import time
+from datetime import timedelta
+
+import pytest
+from jose import JWTError
+
+from app.core.security import (
+    create_access_token,
+    decode_access_token,
+    hash_password,
+    verify_password,
+)
+
+
+# ── Password hashing ─────────────────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_hash_password_returns_different_hash():
+    h = hash_password("TestPass123!")
+    assert h != "TestPass123!"
+    assert len(h) > 20
+
+
+@pytest.mark.unit
+def test_verify_password_correct():
+    h = hash_password("MySecret1!")
+    assert verify_password("MySecret1!", h) is True
+
+
+@pytest.mark.unit
+def test_verify_password_wrong():
+    h = hash_password("MySecret1!")
+    assert verify_password("wrong", h) is False
+
+
+@pytest.mark.unit
+def test_verify_password_empty():
+    h = hash_password("MySecret1!")
+    assert verify_password("", h) is False
+
+
+# ── JWT creation / decoding ───────────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_create_and_decode_token_roundtrip():
+    token = create_access_token(data={"sub": "user-abc"})
+    payload = decode_access_token(token)
+    assert payload["sub"] == "user-abc"
+    assert payload["token_version"] == 1  # default
+
+
+@pytest.mark.unit
+def test_token_includes_expiry():
+    token = create_access_token(data={"sub": "x"})
+    payload = decode_access_token(token)
+    assert "exp" in payload
+
+
+@pytest.mark.unit
+def test_token_version_claim():
+    token = create_access_token(data={"sub": "x"}, token_version=3)
+    payload = decode_access_token(token)
+    assert payload["token_version"] == 3
+
+
+@pytest.mark.unit
+def test_custom_expiry():
+    token = create_access_token(
+        data={"sub": "x"},
+        expires_delta=timedelta(seconds=1),
+    )
+    payload = decode_access_token(token)
+    assert "exp" in payload
+    # Should be ~1 second from now
+    assert abs(payload["exp"] - time.time()) < 5
+
+
+@pytest.mark.unit
+def test_decode_invalid_token_raises():
+    with pytest.raises(JWTError):
+        decode_access_token("not.a.valid.token")
+
+
+@pytest.mark.unit
+def test_decode_tampered_token_raises():
+    token = create_access_token(data={"sub": "x"})
+    # Truncate the signature — always invalid
+    with pytest.raises(JWTError):
+        decode_access_token(token[:-5] + "XXXXX")
+
+```
+
+---
+
+## File: `tests\db\test_pool.py`
+
+```python
+"""Unit tests for app/db/pool.py — connection-string rewriting pure function.
+
+``_langgraph_conn_string`` rewrites the DATABASE_URL in two ways:
+  1. ``postgresql+asyncpg`` → ``postgresql`` (psycopg dialect)
+  2. Neon ``-pooler.`` host → direct host (strip ``-pooler.``)
+
+Both are pure string operations — no DB connection needed.
+"""
+import pytest
+
+from app.db.pool import _langgraph_conn_string
+
+
+# ── asyncpg → psycopg dialect ────────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_rewrites_asyncpg_to_psycopg(monkeypatch):
+    monkeypatch.setattr(
+        "app.db.pool.settings.DATABASE_URL",
+        "postgresql+asyncpg://user:pass@db.example.com/mydb",
+    )
+    result = _langgraph_conn_string()
+    assert result.startswith("postgresql://")
+    assert "asyncpg" not in result
+
+
+# ── pooler → direct host ──────────────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_strips_pooler_from_neon_host(monkeypatch):
+    monkeypatch.setattr(
+        "app.db.pool.settings.DATABASE_URL",
+        "postgresql+asyncpg://user:pass@ep-cool-name-pooler.us-east-2.aws.neon.tech/db",
+    )
+    result = _langgraph_conn_string()
+    # -pooler. should become . so the host is the direct endpoint
+    assert "-pooler." not in result
+    assert "ep-cool-name.us-east-2.aws.neon.tech" in result
+
+
+@pytest.mark.unit
+def test_preserves_credentials_when_stripping_pooler(monkeypatch):
+    monkeypatch.setattr(
+        "app.db.pool.settings.DATABASE_URL",
+        "postgresql+asyncpg://alice:s3cr3t@ep-cool-name-pooler.us-east-2.aws.neon.tech/db",
+    )
+    result = _langgraph_conn_string()
+    assert "alice:s3cr3t@" in result
+
+
+@pytest.mark.unit
+def test_preserves_port_when_stripping_pooler(monkeypatch):
+    monkeypatch.setattr(
+        "app.db.pool.settings.DATABASE_URL",
+        "postgresql+asyncpg://u:p@ep-cool-pooler.us-east-2.aws.neon.tech:5432/db",
+    )
+    result = _langgraph_conn_string()
+    assert ":5432" in result
+
+
+# ── no-op when host isn't a pooler host ───────────────────────────────────────
+
+@pytest.mark.unit
+def test_noop_when_not_pooler_host(monkeypatch):
+    direct = "postgresql+asyncpg://user:pass@db.example.com:5432/mydb"
+    monkeypatch.setattr("app.db.pool.settings.DATABASE_URL", direct)
+    result = _langgraph_conn_string()
+    # Only the dialect should change; the host stays the same.
+    assert "db.example.com" in result
+    assert "-pooler." not in result
+
+
+@pytest.mark.unit
+def test_noop_when_already_postgresql(monkeypatch):
+    """If the URL is already `postgresql://` it should be returned as-is."""
+    monkeypatch.setattr(
+        "app.db.pool.settings.DATABASE_URL",
+        "postgresql://user:pass@db.example.com/mydb",
+    )
+    result = _langgraph_conn_string()
+    assert result == "postgresql://user:pass@db.example.com/mydb"
+
+```
+
+---
+
+## File: `tests\services\test_agent_service.py`
+
+```python
+"""Unit tests for app/services/agent_service.py — run_agent + _build_initial_state."""
+import pytest
+
+from app.schemas.agent import AgentRequest
+from app.services.agent_service import _build_initial_state, run_agent
+
+
+# ── _build_initial_state ─────────────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_build_initial_state_defaults():
+    req = AgentRequest(patient_id="p1", query="hello")
+    state = _build_initial_state(req)
+    assert state["patient_id"] == "p1"
+    assert state["raw_input"] == "hello"
+    assert state["ocr_context"] == ""
+    assert state["final_response"] == ""
+    assert state["messages"] == []
+    assert state["tool_results"] == ""
+    assert state["needs_rag"] is False
+
+
+@pytest.mark.unit
+def test_build_initial_state_with_ocr():
+    req = AgentRequest(patient_id="p1", query="what is this")
+    state = _build_initial_state(req, ocr_text="OCR text here")
+    assert state["ocr_context"] == "OCR text here"
+
+
+# ── run_agent ────────────────────────────────────────────────────────────────
+
+@pytest.mark.unit
+async def test_run_agent_returns_response(monkeypatch):
+    """With a mocked graph.invoke, run_agent returns an AgentResponse."""
+    from app.services import agent_service
+
+    canned_result = {
+        "final_response": "You have a cold.",
+        "detected_lang": "en",
+        "needs_rag": True,
+        "retrieval_decision": "correct",
+        "retrieved_docs": [{"source": "mayo.com"}, {"source": "who.int"}],
+        "saved_memory": True,
+    }
+
+    mock_agent = type("MockAgent", (), {"invoke": lambda self, state, config: canned_result})()
+    monkeypatch.setattr(agent_service, "agent", mock_agent)
+
+    req = AgentRequest(patient_id="p1", query="I have a fever")
+    resp = await run_agent(req)
+
+    assert resp.answer == "You have a cold."
+    assert resp.detected_lang == "en"
+    assert resp.needs_rag is True
+    assert resp.retrieval_decision == "correct"
+    assert resp.sources == ["mayo.com", "who.int"]
+    assert resp.save_memory is True
+
+
+@pytest.mark.unit
+async def test_run_agent_retries_on_operational_error(monkeypatch):
+    """psycopg.OperationalError (Neon wake race) triggers a retry."""
+    import psycopg
+    from app.services import agent_service
+
+    call_count = {"n": 0}
+
+    class _RetryThen:
+        def invoke(self, state, config):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise psycopg.OperationalError("Neon sleeping")
+            return {
+                "final_response": "ok",
+                "detected_lang": "en",
+                "needs_rag": False,
+                "retrieved_docs": [],
+                "saved_memory": False,
+            }
+
+    monkeypatch.setattr(agent_service, "agent", _RetryThen())
+    # Patch sleep so the test doesn't actually wait
+    async def _noop_sleep(*a, **kw):
+        pass
+    monkeypatch.setattr("app.services.agent_service.asyncio.sleep", _noop_sleep)
+
+    req = AgentRequest(patient_id="p1", query="hi")
+    resp = await run_agent(req)
+
+    assert call_count["n"] == 2  # retried once
+    assert resp.answer == "ok"
+
+
+@pytest.mark.unit
+async def test_run_agent_raises_after_max_retries(monkeypatch):
+    import psycopg
+    from app.services import agent_service
+
+    class _AlwaysFails:
+        def invoke(self, state, config):
+            raise psycopg.OperationalError("DB down")
+
+    monkeypatch.setattr(agent_service, "agent", _AlwaysFails())
+    async def _noop_sleep(*a, **kw):
+        pass
+    monkeypatch.setattr("app.services.agent_service.asyncio.sleep", _noop_sleep)
+
+    req = AgentRequest(patient_id="p1", query="hi")
+    with pytest.raises(psycopg.OperationalError):
+        await run_agent(req)
+
+
+@pytest.mark.unit
+async def test_run_agent_non_operational_error_not_retried(monkeypatch):
+    from app.services import agent_service
+
+    class _RuntimeFail:
+        def invoke(self, state, config):
+            raise RuntimeError("graph broke")
+
+    monkeypatch.setattr(agent_service, "agent", _RuntimeFail())
+
+    req = AgentRequest(patient_id="p1", query="hi")
+    with pytest.raises(RuntimeError, match="graph broke"):
+        await run_agent(req)
+
+
+@pytest.mark.unit
+async def test_run_agent_thread_id_defaults_to_patient_id(monkeypatch):
+    """When thread_id is absent, it defaults to patient_id."""
+    from app.services import agent_service
+
+    captured_config = {}
+
+    class _CaptureConfig:
+        def invoke(self, state, config):
+            captured_config.update(config)
+            return {
+                "final_response": "ok", "detected_lang": "en",
+                "needs_rag": False, "retrieved_docs": [], "saved_memory": False,
+            }
+
+    monkeypatch.setattr(agent_service, "agent", _CaptureConfig())
+
+    req = AgentRequest(patient_id="patient-99", query="hi")
+    await run_agent(req)
+
+    assert captured_config["configurable"]["thread_id"] == "patient-99"
+
+
+@pytest.mark.unit
+async def test_run_agent_uses_thread_id_when_provided(monkeypatch):
+    from app.services import agent_service
+
+    captured_config = {}
+
+    class _CaptureConfig:
+        def invoke(self, state, config):
+            captured_config.update(config)
+            return {
+                "final_response": "ok", "detected_lang": "en",
+                "needs_rag": False, "retrieved_docs": [], "saved_memory": False,
+            }
+
+    monkeypatch.setattr(agent_service, "agent", _CaptureConfig())
+
+    req = AgentRequest(
+        patient_id="p1", query="hi", thread_id="conv-uuid-123"
+    )
+    await run_agent(req)
+
+    assert captured_config["configurable"]["thread_id"] == "conv-uuid-123"
+
+```
+
+---
+
+## File: `tests\services\test_chat_service.py`
+
+```python
+"""Unit tests for app/services/chat_service.py — stream_chat queue bridge."""
+import pytest
+
+from app.services.chat_service import stream_chat
+
+
+@pytest.mark.unit
+async def test_stream_chat_yields_chunks(fake_llm):
+    """Chunks from the LLM's astream are yielded as plain strings."""
+    fake_llm.stream_chunks = ["Hello", " ", "world"]
+    messages = [{"role": "user", "content": "hi"}]
+
+    tokens = [t async for t in stream_chat(messages, temperature=0.7, max_tokens=100)]
+
+    assert "".join(tokens) == "Hello world"
+
+
+@pytest.mark.unit
+async def test_stream_chat_skips_empty_chunks(fake_llm):
+    fake_llm.stream_chunks = ["a", "", "b"]
+    messages = [{"role": "user", "content": "hi"}]
+    tokens = [t async for t in stream_chat(messages, temperature=0.5, max_tokens=10)]
+    assert tokens == ["a", "b"]
+
+
+@pytest.mark.unit
+async def test_stream_chat_error_sentinel(fake_llm):
+    """When the LLM raises, stream_chat yields the error sentinel."""
+    fake_llm.should_error = True
+    messages = [{"role": "user", "content": "hi"}]
+
+    tokens = [t async for t in stream_chat(messages, temperature=0.7, max_tokens=100)]
+
+    assert tokens == ["\n\nServer Error"]
+
+
+@pytest.mark.unit
+async def test_stream_chat_converts_role_map(fake_llm, monkeypatch):
+    """Messages dict is converted to LangChain message objects before calling
+    the LLM.  Verify by capturing the messages list."""
+    captured = []
+
+    async def _fake_astream(messages, **kwargs):
+        captured.extend(type(m).__name__ for m in messages)
+        from types import SimpleNamespace
+        yield SimpleNamespace(content="ok")
+
+    fake_llm.astream = _fake_astream
+    messages = [
+        {"role": "system", "content": "be helpful"},
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi"},
+    ]
+    list_async_gen = [t async for t in stream_chat(messages, temperature=0.5, max_tokens=10)]
+    assert "SystemMessage" in captured
+    assert "HumanMessage" in captured
+    assert "AIMessage" in captured
+
+```
+
+---
+
+## File: `tests\services\test_conversation_service.py`
+
+```python
+"""Unit tests for app/services/conversation_service.py.
+
+Covers turn reconstruction from checkpoint rows, title/snippet derivation,
+ownership filtering, and retry logic.
+"""
+import pytest
+
+from app.services import conversation_service as svc
+
+
+# ── _title ────────────────────────────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_title_uses_first_nonempty_raw_input():
+    turns = [
+        {"raw_input": "", "final_response": "a1"},
+        {"raw_input": "  What is diabetes?  ", "final_response": "a2"},
+    ]
+    assert svc._title(turns) == "What is diabetes?"
+
+
+@pytest.mark.unit
+def test_title_fallback_when_all_empty():
+    turns = [{"raw_input": "", "final_response": ""}]
+    assert svc._title(turns) == "Untitled conversation"
+
+
+# ── _sources ──────────────────────────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_sources_extracts_source_fields():
+    turn = {"retrieved_docs": [
+        {"source": "who.int"}, {"source": ""}, {"source": "mayo.com"}, {"source": "x.com"},
+    ]}
+    assert svc._sources(turn) == ["who.int", "mayo.com", "x.com"][:3]
+
+
+@pytest.mark.unit
+def test_sources_empty():
+    assert svc._sources({"retrieved_docs": None}) == []
+    assert svc._sources({"retrieved_docs": []}) == []
+
+
+# ── list_conversations ──────────────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_list_conversations_groups_by_thread(monkeypatch):
+    rows = [
+        {"thread_id": "t1", "checkpoint_id": "c1", "raw_input": "hello",
+         "final_response": "hi", "ts": "2025-01-01T10:00:00",
+         "detected_lang": "en", "needs_rag": False,
+         "retrieval_decision": "", "retrieved_docs": None},
+        {"thread_id": "t1", "checkpoint_id": "c2", "raw_input": "fever?",
+         "final_response": "take meds", "ts": "2025-01-01T11:00:00",
+         "detected_lang": "en", "needs_rag": True,
+         "retrieval_decision": "correct", "retrieved_docs": [{"source": "s"}]},
+        {"thread_id": "t2", "checkpoint_id": "c3", "raw_input": "bye",
+         "final_response": "bye!", "ts": "2025-01-01T12:00:00",
+         "detected_lang": "en", "needs_rag": False,
+         "retrieval_decision": "", "retrieved_docs": None},
+    ]
+    monkeypatch.setattr(svc, "_query", lambda sql, params: rows)
+
+    result = list(svc.list_conversations("patient-1"))
+
+    assert len(result) == 2  # two threads
+    # newest first (t2 has later ts)
+    assert result[0]["thread_id"] == "t2"
+    assert result[1]["thread_id"] == "t1"
+    # message_count = turns * 2
+    assert result[1]["message_count"] == 4  # t1 has 2 turns → 4 messages
+    # snippet = last turn's final_response
+    assert result[1]["snippet"] == "take meds"
+    # title = first non-empty raw_input
+    assert result[1]["title"] == "hello"
+
+
+@pytest.mark.unit
+def test_list_conversations_empty(monkeypatch):
+    monkeypatch.setattr(svc, "_query", lambda sql, params: [])
+    assert svc.list_conversations("nobody") == []
+
+
+# ── get_conversation ─────────────────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_get_conversation_builds_transcript(monkeypatch):
+    rows = [
+        {"thread_id": "t1", "checkpoint_id": "c1", "raw_input": "What is diabetes?",
+         "final_response": "It's a chronic condition.",
+         "ts": "2025-01-01T10:00:00", "detected_lang": "en",
+         "needs_rag": True, "retrieval_decision": "correct",
+         "retrieved_docs": [{"source": "who.int"}]},
+    ]
+    monkeypatch.setattr(svc, "_query", lambda sql, params: rows)
+
+    result = svc.get_conversation("t1", "patient-1")
+
+    assert result is not None
+    assert result["thread_id"] == "t1"
+    assert result["title"] == "What is diabetes?"
+    assert len(result["messages"]) == 2  # user + assistant
+    assert result["messages"][0]["role"] == "user"
+    assert result["messages"][1]["role"] == "assistant"
+    meta = result["messages"][1]["meta"]
+    assert meta["needs_rag"] is True
+    assert meta["retrieval_decision"] == "correct"
+    assert "who.int" in meta["sources"]
+
+
+@pytest.mark.unit
+def test_get_conversation_not_found(monkeypatch):
+    """When no turns match the thread_id/patient_id → None."""
+    monkeypatch.setattr(svc, "_query", lambda sql, params: [])
+    assert svc.get_conversation("missing", "patient-1") is None
+
+
+@pytest.mark.unit
+def test_get_conversation_skips_empty_turns(monkeypatch):
+    """Turns with both empty raw_input and final_response are skipped."""
+    rows = [
+        {"thread_id": "t1", "checkpoint_id": "c0", "raw_input": "",
+         "final_response": "", "ts": "2025-01-01T09:00:00",
+         "detected_lang": "", "needs_rag": False,
+         "retrieval_decision": "", "retrieved_docs": None},
+        {"thread_id": "t1", "checkpoint_id": "c1", "raw_input": "hi",
+         "final_response": "hello", "ts": "2025-01-01T10:00:00",
+         "detected_lang": "en", "needs_rag": False,
+         "retrieval_decision": "", "retrieved_docs": None},
+    ]
+    monkeypatch.setattr(svc, "_query", lambda sql, params: rows)
+
+    result = svc.get_conversation("t1", "patient-1")
+    assert len(result["messages"]) == 2  # only the non-empty turn
+
+
+@pytest.mark.unit
+def test_get_conversation_ownership_filter(monkeypatch):
+    """The patient_id is passed in the SQL params — only that patient's
+    turns are returned.  If _query returns [], the conversation is None
+    (ownership enforced at the DB level)."""
+    monkeypatch.setattr(svc, "_query", lambda sql, params: [])
+    # Patient-2 asks for patient-1's thread → no rows → None
+    assert svc.get_conversation("t1", "patient-2") is None
+
+```
+
+---
+
+## File: `tests\services\test_rag_chat_service.py`
+
+```python
+"""Unit tests for app/services/rag_chat_service.py — _build_prompt + stream_rag_chat."""
+import pytest
+
+from app.services.rag_chat_service import _build_prompt, stream_rag_chat
+
+
+# ── _build_prompt ─────────────────────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_build_prompt_includes_query():
+    prompt = _build_prompt("What is diabetes?", [{"text": "x", "source": "src"}])
+    assert "What is diabetes?" in prompt
+    assert "Answer:" in prompt
+
+
+@pytest.mark.unit
+def test_build_prompt_includes_doc_text():
+    docs = [{"text": "Diabetes is chronic.", "source": "who.int"}]
+    prompt = _build_prompt("q", docs)
+    assert "Diabetes is chronic." in prompt
+    assert "who.int" in prompt
+
+
+@pytest.mark.unit
+def test_build_prompt_truncates_to_300_chars():
+    long_text = "A" * 500
+    docs = [{"text": long_text, "source": "src"}]
+    prompt = _build_prompt("q", docs)
+    # The text should be truncated to 300 chars in the prompt
+    assert "A" * 300 in prompt
+    assert "A" * 301 not in prompt
+
+
+@pytest.mark.unit
+def test_build_prompt_uses_top_3_docs():
+    docs = [
+        {"text": f"doc{i}", "source": f"src{i}"} for i in range(5)
+    ]
+    prompt = _build_prompt("q", docs)
+    assert "doc0" in prompt
+    assert "doc1" in prompt
+    assert "doc2" in prompt
+    assert "doc3" not in prompt  # only top 3
+
+
+@pytest.mark.unit
+def test_build_prompt_empty_docs():
+    prompt = _build_prompt("hello", [])
+    assert "hello" in prompt
+    assert "Answer:" in prompt
+
+
+# ── stream_rag_chat ──────────────────────────────────────────────────────────
+
+@pytest.mark.unit
+async def test_stream_rag_chat_yields_chunks(fake_llm, fake_qdrant):
+    fake_llm.stream_chunks = ["RAG", " ", "answer"]
+    messages = [{"role": "user", "content": "What is diabetes?"}]
+
+    tokens = [t async for t in stream_rag_chat(messages, temperature=0.5, max_tokens=100)]
+    assert "".join(tokens) == "RAG answer"
+
+
+@pytest.mark.unit
+async def test_stream_rag_chat_error_sentinel(fake_llm, fake_qdrant):
+    fake_llm.should_error = True
+    messages = [{"role": "user", "content": "hi"}]
+
+    tokens = [t async for t in stream_rag_chat(messages, temperature=0.5, max_tokens=100)]
+    assert tokens == ["\n\nServer Error"]
+
+
+@pytest.mark.unit
+async def test_stream_rag_chat_uses_last_message_as_query(fake_llm, fake_qdrant, monkeypatch):
+    """The last user message's content is what gets sent to corrective_retrieve."""
+    captured_query = []
+
+    original_retrieve = fake_qdrant
+
+    def _spy_retrieve(query, top_k=5, category=None):
+        captured_query.append(query)
+        return original_retrieve(query, top_k=top_k, category=category)
+
+    monkeypatch.setattr("app.core.rag.corrective_rag.retrieve", _spy_retrieve)
+
+    messages = [
+        {"role": "user", "content": "earlier question"},
+        {"role": "assistant", "content": "earlier answer"},
+        {"role": "user", "content": "What is diabetes?"},
+    ]
+    _ = [t async for t in stream_rag_chat(messages, temperature=0.5, max_tokens=50)]
+    assert captured_query[-1] == "What is diabetes?"
 
 ```
 
