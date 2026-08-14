@@ -4,9 +4,7 @@ from typing import Optional, Literal
 
 
 class ToolCall(BaseModel):
-    """Grammar-constrained agent decision. Kept deliberately small (5 fixed
-    actions, flat action_input dict) — a 7B model reasons about this far
-    more reliably than a deep/nested schema."""
+    """Grammar-constrained agent decision."""
     thought: str = Field(..., description="Brief reasoning for this step")
     action: Literal[
         "fetch_patient_facts",
@@ -16,16 +14,23 @@ class ToolCall(BaseModel):
         "final_answer",
     ]
     action_input: dict = Field(default_factory=dict)
-    answer: Optional[str] = Field(None, description="Required when action is final_answer")
+    # Required (no Optional, no default null) so the model can no longer
+    # emit "answer": null and skip past our checks. It can still emit ""
+    # (an empty string) on a bad generation — we deliberately do NOT add a
+    # strict min_length here, because that would make pydantic raise a
+    # ValidationError on empty text, which just swaps one generic fallback
+    # for another. Instead, agent_node.py checks for blank/short answers
+    # itself and does something more useful about it (see agent_node.py).
+    answer: str = Field(
+        default="",
+        description="For final_answer: the full reply text. For any tool action: a short one-line note on why you're calling it.",
+    )
 
 
 class AgentRequest(BaseModel):
     patient_id: str
     query: str = ""
     image_base64: Optional[str] = None
-    # LangGraph thread id — one per conversation. Defaults to patient_id for
-    # backwards compatibility with clients that predate the sidebar, so old
-    # requests keep resuming the single per-patient thread they always had.
     thread_id: Optional[str] = None
 
 
@@ -38,16 +43,11 @@ class AgentResponse(BaseModel):
     save_memory: bool
 
 
-# ── Conversation history (sidebar) ──────────────────────────────────────
-# Reconstructed directly from the LangGraph checkpointer — there is no
-# separate conversation table. See app/services/conversation_service.py.
-
-
 class ConversationMessage(BaseModel):
     role: str
     content: str
     timestamp: Optional[str] = None
-    meta: Optional[dict] = None  # mirrors the in-session meta chips (lang, rag, sources)
+    meta: Optional[dict] = None
 
 
 class ConversationMeta(BaseModel):

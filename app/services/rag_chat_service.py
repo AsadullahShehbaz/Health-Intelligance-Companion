@@ -3,7 +3,7 @@
 import asyncio
 from typing import AsyncGenerator
 
-from app.core.llm import llm
+from app.core.llm import llm, llm_lock
 from app.core.rag.corrective_rag import corrective_retrieve
 from app.utils.logging_config import get_logger
 
@@ -13,8 +13,6 @@ _SENTINEL = object()
 
 
 def _build_prompt(query: str, docs: list[dict]) -> str:
-    """Build an augmented prompt using retrieved medical context."""
-
     context = "\n\n".join(
         f"[{d['source']}] {d['text'][:300]}"
         for d in docs[:3]
@@ -69,26 +67,28 @@ async def stream_rag_chat(
 
             logger.info("Starting LLM response generation.")
 
-            stream = llm.create_chat_completion(
-                messages=rag_messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                stream=True,
-            )
+            with llm_lock:
+                llm.reset()
+                stream = llm.create_chat_completion(
+                    messages=rag_messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    stream=True,
+                )
 
-            token_count = 0
+                token_count = 0
 
-            for chunk in stream:
+                for chunk in stream:
 
-                delta = chunk["choices"][0]["delta"]
+                    delta = chunk["choices"][0]["delta"]
 
-                if "content" in delta:
-                    token_count += 1
+                    if "content" in delta:
+                        token_count += 1
 
-                    loop.call_soon_threadsafe(
-                        queue.put_nowait,
-                        delta["content"],
-                    )
+                        loop.call_soon_threadsafe(
+                            queue.put_nowait,
+                            delta["content"],
+                        )
 
             logger.info(
                 "LLM generation completed | streamed_tokens=%d",
