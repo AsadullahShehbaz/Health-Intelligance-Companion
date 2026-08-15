@@ -24,9 +24,7 @@ CRITICAL INSTRUCTIONS:
 
 1. Medical Symptoms/Queries: If the user mentions ANY medical symptom, pain, illness, medication, or medical question (e.g., "headache", "stomach pain", "fever", "medication advice"), you MUST call 'retrieve_medical_knowledge' or 'search_web_medical'.
 
-2. Patient History Retrieval: If the user asks about past visits, past symptoms, or recorded medical conditions, you MUST call 'fetch_patient_facts'.
-
-3. Identity/Background Questions: If the user asks about their OWN previously-stated personal details (name, age, occupation, or anything else non-medical), you MUST call 'fetch_patient_profile', which returns everything saved. NEVER call 'fetch_patient_facts' for this — that tool only covers medical/symptom history.
+2. Patient History / Identity Questions: No tool is needed. Patient memory context (past symptoms, identity details, emotional states) is already injected into the conversation by a separate memory system. Answer from the context you already have.
 
 EXCEPTIONS:
 - ONLY skip calling tools if the message is purely conversational (e.g., "Hello", "Hi", "Thank you", "Who are you?", "Good morning").

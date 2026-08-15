@@ -24,7 +24,7 @@ from app.db.session import get_db
 from app.models.user import User
 from app.models.refresh_token import RefreshToken
 from app.config import settings
-from app.schemas.auth import LoginRequest, RegisterRequest, RefreshTokenRequest, TokenResponse
+from app.schemas.auth import LoginRequest, RegisterRequest, RefreshTokenRequest, TokenResponse, UserResponse
 from app.utils.logging_config import log_auth_event
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -197,5 +197,6 @@ async def logout(
     return {"message": "Logged out"}
 
 
+@router.get("/me", response_model=UserResponse)
 async def get_current_user(user: User = Depends(get_current_user)):
-    return user    
+    return user

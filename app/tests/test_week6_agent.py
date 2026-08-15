@@ -3,9 +3,9 @@ test_week6_agent.py — run the tool-binding agent loop against a live backend.
 
 Direct-run script (not pytest), same convention as the other app/tests scripts.
 All four cases run on ONE patient_id so you can confirm the fever from case 2
-is actually recalled in case 3 via fetch_patient_facts — the real proof the
-fact-memory redesign works, and that the loop terminates (no hang) for both
-the happy path and the tool-calling path.
+is actually recalled in case 3 via the remember_node memory system — the real
+proof the memory pipeline works, and that the loop terminates (no hang) for
+both the happy path and the tool-calling path.
 
     conda activate ft-project
     python app/tests/test_week6_agent.py [max_cases]
@@ -58,8 +58,8 @@ async def main():
     cases = [
         "hello, how are you",
         "I have had a fever and body pain for three days",
-        "is this the same fever from before",       # tests fetch_patient_facts
-        "I'm really scared about this",              # tests save_emotional_state
+        "is this the same fever from before",       # tests remember_node memory recall
+        "I'm really scared about this",              # tests emotional awareness
     ]
     if len(sys.argv) > 1:
         cases = cases[: int(sys.argv[1])]

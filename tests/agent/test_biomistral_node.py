@@ -128,33 +128,14 @@ def test_biomistral_no_context_uses_placeholders(fake_llm, sample_state):
 
 
 @pytest.mark.unit
-def test_biomistral_places_patient_profile_next_to_question(fake_llm, sample_state):
-    """Patient-specific facts should be injected immediately before the
-    user's question so the local model sees them as the most salient context."""
+def test_biomistral_includes_remembered_context(fake_llm, sample_state):
+    """Patient memory from remember_node should appear in the system prompt."""
     fake_llm.response_text = "ok"
     fake_llm.tool_calls = None
-    captured = {}
-    orig = fake_llm.invoke
+    captured = _capture_system(fake_llm)
 
-    def _capture(messages):
-        captured["system"] = next(
-            (m for m in messages if isinstance(m, SystemMessage)), None
-        )
-        captured["human"] = next(
-            (m for m in messages if isinstance(m, HumanMessage)), None
-        )
-        return orig(messages)
-
-    fake_llm.invoke = _capture
-
-    state = sample_state(
-        raw_input="what do you know about me?",
-        tool_results="--- Context from tool [fetch_patient_profile] ---\nKnown patient profile:\n- education: Class 11\n- name: Ayan",
-    )
+    state = sample_state(remembered_context="Patient name: Ayan, Semester: 11th class")
     biomistral_node(state)
 
-    human_text = captured["human"].content
-    assert "Patient profile (use this to answer)" in human_text
-    assert "education: Class 11" in human_text
-    assert "name: Ayan" in human_text
-    assert human_text.index("Patient profile (use this to answer)") < human_text.index("User question: what do you know about me?")
+    assert captured["system"] is not None
+    assert "Ayan" in captured["system"].content

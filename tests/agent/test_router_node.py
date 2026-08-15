@@ -38,7 +38,7 @@ def test_router_no_tools_stores_only_user_message(fake_llm, sample_state):
 def test_router_tool_call_stores_user_and_ai(fake_llm, sample_state):
     """When the router emits tool_calls, both the user message and the
     AIMessage(tool_calls) are stored so the ToolNode can execute them."""
-    fake_llm.tool_calls = [{"name": "save_patient_fact", "args": {}, "id": "tc1"}]
+    fake_llm.tool_calls = [{"name": "retrieve_medical_knowledge", "args": {"query": "fever"}, "id": "tc1"}]
 
     state = sample_state(raw_input="I have a fever")
     result = router_node(state)

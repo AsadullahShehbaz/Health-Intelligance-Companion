@@ -2,7 +2,7 @@
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from app.agent.graph import _extract_tool_metadata, _route_after_router, _run_tools
+from app.agent.graph import _extract_tool_metadata, _route_after_rag_router as _route_after_router, _run_tools
 
 
 # ── _route_after_router ──────────────────────────────────────────────────────
@@ -15,7 +15,7 @@ def test_route_to_tools_when_tool_calls_present():
             HumanMessage(content="hello"),
             AIMessage(
                 content="",
-                tool_calls=[{"name": "fetch_patient_facts", "args": {}, "id": "1"}],
+                tool_calls=[{"name": "retrieve_medical_knowledge", "args": {"query": "fever"}, "id": "1"}],
             ),
         ]
     }
@@ -23,27 +23,27 @@ def test_route_to_tools_when_tool_calls_present():
 
 
 @pytest.mark.unit
-def test_route_to_biomistral_when_no_tool_calls(sample_state):
-    """When the last message is a plain AIMessage (no tool_calls) → biomistral."""
+def test_route_to_chat_when_no_tool_calls(sample_state):
+    """When the last message is a plain AIMessage (no tool_calls) → chat."""
     state = sample_state(messages=[
         HumanMessage(content="hello"),
         AIMessage(content="hi there"),
     ])
-    assert _route_after_router(state) == "biomistral"
+    assert _route_after_router(state) == "chat"
 
 
 @pytest.mark.unit
-def test_route_to_biomistral_when_last_is_human():
+def test_route_to_chat_when_last_is_human():
     """No-tool turn: the router stored only the user message, so the last
-    message is a HumanMessage → straight to BioMistral."""
+    message is a HumanMessage → straight to chat."""
     state = {"messages": [HumanMessage(content="hello")]}
-    assert _route_after_router(state) == "biomistral"
+    assert _route_after_router(state) == "chat"
 
 
 @pytest.mark.unit
-def test_route_to_biomistral_on_empty_history():
-    """Edge case: no messages at all → BioMistral (no tools to run)."""
-    assert _route_after_router({"messages": []}) == "biomistral"
+def test_route_to_chat_on_empty_history():
+    """Edge case: no messages at all → chat (no tools to run)."""
+    assert _route_after_router({"messages": []}) == "chat"
 
 
 # ── _extract_tool_metadata ────────────────────────────────────────────────────
@@ -64,23 +64,9 @@ def test_extract_metadata_from_rag_tool_message():
     meta = _extract_tool_metadata([tool_msg])
 
     assert meta["needs_rag"] is True
-    assert meta["retrieval_decision"] == "correct"
+    assert meta["retrieval_decision"] == "retrieved"
     assert meta["retrieved_docs"][0]["source"] == "who.int"
     assert "Diabetes is a chronic condition" in meta["tool_results"]
-    assert meta["saved_memory"] is False
-
-
-@pytest.mark.unit
-def test_extract_metadata_detects_saved_memory():
-    meta = _extract_tool_metadata([
-        ToolMessage(
-            content="Saved to patient record: fever (ongoing)",
-            tool_call_id="tc1",
-            name="save_patient_fact",
-        )
-    ])
-    assert meta["saved_memory"] is True
-    assert meta["needs_rag"] is False
 
 
 @pytest.mark.unit
@@ -88,7 +74,6 @@ def test_extract_metadata_empty():
     meta = _extract_tool_metadata([])
     assert meta["tool_results"] == ""
     assert meta["needs_rag"] is False
-    assert meta["saved_memory"] is False
     assert meta["retrieval_decision"] == ""
     assert meta["retrieved_docs"] == []
 

@@ -83,7 +83,7 @@ class FakeLLM:
     Configure per-test by setting attributes on the returned instance::
 
         fake_llm.response_text = "Custom answer"
-        fake_llm.tool_calls   = [{"name": "save_patient_fact", "args": {...}, "id": "..."}]
+        fake_llm.tool_calls   = [{"name": "retrieve_medical_knowledge", "args": {"query": "..."}, "id": "..."}]
         fake_llm.stream_chunks = ["Hello", " world"]
         fake_llm.should_error = True   # to test error / sentinel paths
     """
