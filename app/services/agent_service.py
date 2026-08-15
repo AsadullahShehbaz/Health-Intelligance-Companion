@@ -44,6 +44,7 @@ def _build_initial_state(req: AgentRequest, ocr_text: str = "") -> dict:
         "retrieval_decision": "",
         "retrieved_docs": [],
         "saved_memory": False,
+        "remembered_context": "",
         "tool_results": "",
         "messages": [],
     }

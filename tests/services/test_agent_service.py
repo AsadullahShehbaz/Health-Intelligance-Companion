@@ -1,6 +1,7 @@
 """Unit tests for app/services/agent_service.py — run_agent + _build_initial_state."""
 import pytest
 
+from app.core.llm import validate_llm_connection
 from app.schemas.agent import AgentRequest
 from app.services.agent_service import _build_initial_state, run_agent
 
@@ -170,3 +171,16 @@ async def test_run_agent_uses_thread_id_when_provided(monkeypatch):
     await run_agent(req)
 
     assert captured_config["configurable"]["thread_id"] == "conv-uuid-123"
+
+
+@pytest.mark.unit
+def test_validate_llm_connection_reports_unreachable_backend(monkeypatch):
+    import httpx
+
+    def _raise_connect_error(*args, **kwargs):
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr("app.core.llm.httpx.get", _raise_connect_error)
+
+    with pytest.raises(RuntimeError, match="LLM backend|LLM_BASE_URL|llama-server"):
+        validate_llm_connection()

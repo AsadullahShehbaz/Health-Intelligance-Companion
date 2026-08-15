@@ -1,7 +1,9 @@
-"""Password hashing, JWT management."""
+"""Password hashing, JWT management, and refresh token primitives."""
 
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+import hashlib
+import secrets
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
@@ -80,7 +82,32 @@ def decode_access_token(token: str) -> dict:
         logger.warning("JWT decode failed | reason=%s", e)
         raise
 
-def get_current_user(token: str = Depends(oauth2_scheme)):
+
+# ======================================================================
+# Refresh tokens (opaque random strings, hashed at rest)
+# ======================================================================
+
+
+def generate_refresh_token() -> str:
+    """Opaque, high-entropy refresh token — not a JWT, nothing to decode.
+    
+    Returns a cryptographically secure random string encoded in URL-safe base64.
+    """
+    return secrets.token_urlsafe(48)
+
+
+def hash_token(token: str) -> str:
+    """One-way hash for at-rest storage — same pattern as password reset tokens.
+    
+    The database stores only the hash; the unhashed token is sent to the client
+    and never persisted. This way, a compromised DB doesn't leak valid tokens.
+    """
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+# ======================================================================
+# Access control
+# ======================================================================
     try:
         payload = decode_access_token(token)
         user_id: str | None = payload.get("sub")

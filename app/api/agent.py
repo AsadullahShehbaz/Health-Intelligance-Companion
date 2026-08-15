@@ -1,9 +1,12 @@
 # app/api/agent.py
 import time
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
+from openai import APIConnectionError
 from starlette.concurrency import run_in_threadpool
 
+from app.config import settings
 from app.deps import get_current_user
 from app.models.user import User
 from app.schemas.agent import (
@@ -43,6 +46,19 @@ async def invoke(req: AgentRequest):
             req.patient_id,
         )
         return result
+    except (APIConnectionError, httpx.ConnectError, httpx.HTTPError) as e:
+        logger.exception(
+            "✗ POST /agent/invoke failed because the LLM backend is unavailable after %.2fs | patient=%s",
+            time.monotonic() - start,
+            req.patient_id,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "LLM backend unavailable. Start the local model server or fix "
+                f"LLM_BASE_URL={settings.LLM_BASE_URL}."
+            ),
+        ) from e
     except Exception as e:
         logger.exception(
             "✗ POST /agent/invoke failed after %.2fs | patient=%s",

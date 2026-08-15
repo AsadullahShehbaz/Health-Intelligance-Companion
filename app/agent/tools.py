@@ -1,16 +1,23 @@
 # app/agent/tools.py
 import re
+import time
 import uuid
 from datetime import date
 
+import psycopg
 from langchain_core.tools import tool
 
 from app.db.lifespan import store
+from app.db.pool import run_with_retry
 from app.core.rag.rag_tool import perform_direct_rag
 from app.core.rag.corrective_rag import web_search_fallback
 from app.utils.logging_config import get_logger
 
 logger = get_logger(__name__)
+
+
+class MemoryPersistenceError(Exception):
+    """Raised when a store.put() cannot be confirmed via read-back."""
 
 
 def _normalize_field_key(field: str) -> str:
@@ -24,6 +31,60 @@ def _normalize_field_key(field: str) -> str:
     return key or "unlabeled_fact"
 
 
+def _verified_put(namespace, key, value, retries: int = 1):
+    """Write a value to the store and confirm by read-back before reporting success."""
+    for attempt in range(retries + 1):
+        try:
+            run_with_retry(store.put, namespace, key, value)
+            confirmed = run_with_retry(store.get, namespace, key)
+        except psycopg.OperationalError:
+            if attempt >= retries:
+                raise
+            logger.warning(
+                "Transient DB error in memory write confirmation (attempt %d/%d), retrying...",
+                attempt + 1,
+                retries + 1,
+            )
+            time.sleep(0.5)
+            continue
+
+        if confirmed is None:
+            if attempt >= retries:
+                raise MemoryPersistenceError(f"Write to {namespace}/{key} was not confirmed")
+            logger.warning(
+                "Memory write not confirmed on attempt %d/%d; retrying...",
+                attempt + 1,
+                retries + 1,
+            )
+            continue
+
+        confirmed_value = getattr(confirmed, "value", confirmed)
+        if isinstance(value, dict) and isinstance(confirmed_value, dict):
+            if confirmed_value != value:
+                if attempt >= retries:
+                    raise MemoryPersistenceError(f"Write to {namespace}/{key} was not confirmed")
+                logger.warning(
+                    "Memory write mismatch on attempt %d/%d; retrying...",
+                    attempt + 1,
+                    retries + 1,
+                )
+                continue
+        elif confirmed_value != value:
+            if attempt >= retries:
+                raise MemoryPersistenceError(f"Write to {namespace}/{key} was not confirmed")
+            logger.warning(
+                "Memory write mismatch on attempt %d/%d; retrying...",
+                attempt + 1,
+                retries + 1,
+            )
+            continue
+
+        logger.info("✓ Confirmed memory write | namespace=%s | key=%s", namespace, key)
+        return confirmed
+
+    raise MemoryPersistenceError(f"Write to {namespace}/{key} was not confirmed")
+
+
 @tool
 def fetch_patient_facts(patient_id: str, query: str) -> str:
     """Retrieve relevant MEDICAL/symptom history about a patient from persistent
@@ -35,7 +96,7 @@ def fetch_patient_facts(patient_id: str, query: str) -> str:
         logger.warning("Memory store not available for fetch_patient_facts")
         return "Memory store not available."
     try:
-        items = store.search(("patient_facts", patient_id), query=query, limit=5)
+        items = run_with_retry(store.search, ("patient_facts", patient_id), query=query, limit=5)
         facts = [item.value for item in items]
         if not facts:
             logger.info("No patient history found | patient=%s", patient_id)
@@ -78,7 +139,7 @@ def fetch_patient_profile(patient_id: str) -> str:
     try:
         # No query = return everything under this namespace, not a
         # semantic-similarity subset. This is a profile, not a search index.
-        items = store.search(("patient_profile", patient_id), limit=100)
+        items = run_with_retry(store.search, ("patient_profile", patient_id), limit=100)
         if not items:
             logger.info("No profile data found | patient=%s", patient_id)
             return "No profile information saved for this patient yet."
@@ -122,17 +183,27 @@ def save_patient_profile(patient_id: str, field: str, value: str, source_message
     normalized_key = _normalize_field_key(field)
 
     try:
-        store.put(("patient_profile", patient_id), normalized_key, {
+        run_with_retry(store.put, ("patient_profile", patient_id), normalized_key, {
             "label": field.strip(),
             "value": value.strip(),
             "recorded_on": date.today().isoformat(),
             "source_message": source_message,
         })
+
+        confirmed = store.get(("patient_profile", patient_id), normalized_key)
+        if not confirmed:
+            return "MEMORY_ERROR: could not save profile field — do not tell the patient this was saved."
         logger.info("✓ Saved patient profile field | patient=%s | key=%s", patient_id, normalized_key)
         return f"Saved to patient profile: {field.strip()} = {value.strip()}"
     except Exception as e:
+        logger.error(
+            "MEMORY_SAVE_FAILED | patient=%s | field=%s | error=%s",
+            patient_id,
+            normalized_key,
+            e,
+        )
         logger.exception("save_patient_profile failed")
-        return f"Error saving profile field: {e}"
+        return "MEMORY_ERROR: could not save profile field — do not tell the patient this was saved."
 
 
 @tool
@@ -163,16 +234,30 @@ def save_patient_fact(patient_id: str, symptom: str, onset: str, status: str, so
         logger.warning("Memory store not available for save_patient_fact")
         return "Memory store not available."
     key = f"{symptom}_{date.today().isoformat()}_{uuid.uuid4().hex[:4]}"
+    payload = {
+        "symptom": symptom,
+        "onset": onset,
+        "status": status,
+        "recorded_on": date.today().isoformat(),
+        "source_message": source_message,
+    }
     try:
-        store.put(("patient_facts", patient_id), key, {
-            "symptom": symptom, "onset": onset, "status": status,
-            "recorded_on": date.today().isoformat(), "source_message": source_message,
-        })
+        _verified_put(("patient_facts", patient_id), key, payload, retries=1)
         logger.info("✓ Saved patient fact | patient=%s | key=%s", patient_id, key)
         return f"Saved to patient record: {symptom} ({status})"
+    except MemoryPersistenceError:
+        logger.error(
+            "MEMORY_SAVE_UNCONFIRMED | patient=%s | field=%s",
+            patient_id,
+            symptom,
+        )
+        return (
+            f"MEMORY_ERROR: could not confirm save of '{symptom}' — "
+            "do not tell the patient this was saved."
+        )
     except Exception as e:
         logger.exception("save_patient_fact failed")
-        return f"Error saving fact: {e}"
+        return f"MEMORY_ERROR: could not save fact '{symptom}' — do not tell the patient this was saved."
 
 
 @tool
@@ -186,16 +271,30 @@ def save_emotional_state(patient_id: str, emotion: str, intensity: str, trigger:
         logger.warning("Memory store not available for save_emotional_state")
         return "Memory store not available."
     key = f"emotion_{date.today().isoformat()}_{uuid.uuid4().hex[:4]}"
+    payload = {
+        "emotion": emotion,
+        "intensity": intensity,
+        "trigger": trigger,
+        "recorded_on": date.today().isoformat(),
+        "source_message": source_message,
+    }
     try:
-        store.put(("patient_emotions", patient_id), key, {
-            "emotion": emotion, "intensity": intensity, "trigger": trigger,
-            "recorded_on": date.today().isoformat(), "source_message": source_message,
-        })
+        _verified_put(("patient_emotions", patient_id), key, payload, retries=1)
         logger.info("✓ Saved emotional state | patient=%s | key=%s", patient_id, key)
         return f"Noted emotional state: {emotion} ({intensity})"
+    except MemoryPersistenceError:
+        logger.error(
+            "MEMORY_SAVE_UNCONFIRMED | patient=%s | field=%s",
+            patient_id,
+            emotion,
+        )
+        return (
+            f"MEMORY_ERROR: could not confirm save of '{emotion}' — "
+            "do not tell the patient this was saved."
+        )
     except Exception as e:
         logger.exception("save_emotional_state failed")
-        return f"Error saving emotion: {e}"
+        return f"MEMORY_ERROR: could not save emotion '{emotion}' — do not tell the patient this was saved."
 
 
 @tool
@@ -216,9 +315,6 @@ def search_web_medical(query: str) -> str:
 TOOLS = [
     fetch_patient_facts,
     fetch_patient_profile,
-    save_patient_profile,
     retrieve_medical_knowledge,
-    save_patient_fact,
-    save_emotional_state,
     search_web_medical,
 ]

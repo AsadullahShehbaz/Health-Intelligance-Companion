@@ -10,6 +10,9 @@ class AgentState(TypedDict):
     raw_input: str
     messages: Annotated[list, add_messages]
 
+    # NEW — populated by remember_node, consumed by biomistral_node
+    remembered_context: str   # formatted "- fact\n- fact" block, always present
+
     # Metadata flags — read straight from checkpoint rows by
     # conversation_service.py to build the sidebar. Don't rename these
     # without updating that file too.

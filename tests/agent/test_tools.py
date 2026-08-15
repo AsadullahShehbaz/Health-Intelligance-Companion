@@ -1,27 +1,135 @@
 """Unit tests for app/agent/tools.py — all four LangGraph tools."""
+from types import SimpleNamespace
+
+import psycopg
 import pytest
 
 from app.agent.tools import (
     TOOLS,
     fetch_patient_facts,
-    retrieve_medical_knowledge,
+    fetch_patient_profile,
     save_emotional_state,
     save_patient_fact,
+    save_patient_profile,
 )
 
 
 # ── TOOLS list ───────────────────────────────────────────────────────────────
 
 @pytest.mark.unit
-def test_tools_list_has_four():
-    assert len(TOOLS) == 4
+def test_tools_list_has_expected_tools():
     names = {t.name for t in TOOLS}
     assert names == {
         "fetch_patient_facts",
+        "fetch_patient_profile",
+        "save_patient_profile",
         "retrieve_medical_knowledge",
         "save_patient_fact",
         "save_emotional_state",
+        "search_web_medical",
     }
+
+
+# ── profile retries ─────────────────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_save_patient_profile_retries_transient_store_error(monkeypatch, fake_store):
+    class FlakyStore(fake_store.__class__):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        def put(self, namespace, key, value):
+            self.calls += 1
+            if self.calls == 1:
+                raise psycopg.OperationalError("SSL connection has been closed unexpectedly")
+            return super().put(namespace, key, value)
+
+    flaky_store = FlakyStore()
+    monkeypatch.setattr("app.agent.tools.store", flaky_store)
+
+    result = save_patient_profile.invoke({
+        "patient_id": "p1",
+        "field": "name",
+        "value": "Ayan",
+        "source_message": "My name is Ayan",
+    })
+
+    assert "Saved to patient profile: name = Ayan" in result
+    assert flaky_store.calls == 2
+    assert flaky_store.get(("patient_profile", "p1"), "name").value["value"] == "Ayan"
+
+
+@pytest.mark.unit
+def test_fetch_patient_profile_retries_transient_store_error(monkeypatch):
+    class FlakyStore:
+        def __init__(self):
+            self.calls = 0
+
+        def search(self, namespace, query="", limit=5):
+            self.calls += 1
+            if self.calls == 1:
+                raise psycopg.OperationalError("SSL connection has been closed unexpectedly")
+            return [
+                SimpleNamespace(
+                    key="name",
+                    value={"value": "Ayan"},
+                )
+            ]
+
+    flaky_store = FlakyStore()
+    monkeypatch.setattr("app.agent.tools.store", flaky_store)
+
+    result = fetch_patient_profile.invoke({"patient_id": "p1"})
+    assert "Known patient profile" in result
+    assert "name: Ayan" in result
+    assert flaky_store.calls == 2
+
+
+@pytest.mark.unit
+def test_save_patient_profile_surfaces_unconfirmed_write(monkeypatch, caplog):
+    class NeverConfirmedStore:
+        def put(self, namespace, key, value):
+            return None
+
+        def get(self, namespace, key):
+            return None
+
+    monkeypatch.setattr("app.agent.tools.store", NeverConfirmedStore())
+
+    with caplog.at_level("ERROR"):
+        result = save_patient_profile.invoke({
+            "patient_id": "p1",
+            "field": "name",
+            "value": "Ayan",
+            "source_message": "My name is Ayan",
+        })
+
+    assert result.startswith("MEMORY_ERROR:")
+    assert "MEMORY_SAVE_UNCONFIRMED" in caplog.text
+
+
+@pytest.mark.unit
+def test_fetch_patient_facts_retries_transient_store_error(monkeypatch):
+    class FlakyStore:
+        def __init__(self):
+            self.calls = 0
+
+        def search(self, namespace, query="", limit=5):
+            self.calls += 1
+            if self.calls == 1:
+                raise psycopg.OperationalError("SSL connection has been closed unexpectedly")
+            return [
+                SimpleNamespace(value={"symptom": "fever", "onset": "3 days ago", "status": "ongoing"})
+            ]
+
+    flaky_store = FlakyStore()
+    monkeypatch.setattr("app.agent.tools.store", flaky_store)
+
+    result = fetch_patient_facts.invoke({"patient_id": "p1", "query": "fever"})
+    assert "Known patient history" in result
+    assert "fever" in result
+    assert flaky_store.calls == 2
 
 
 # ── fetch_patient_facts ─────────────────────────────────────────────────────

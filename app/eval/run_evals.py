@@ -6,6 +6,21 @@ from app.core.rag.corrective_rag import corrective_retrieve
 from app.eval.test_set import TEST_CASES
 
 
+def response_mentions_known_patient_profile(response: str, patient_profile: dict) -> bool:
+    """Cheap adherence guard: the model should mention at least one known
+    patient fact when a patient profile was provided in context."""
+    if not patient_profile:
+        return True
+
+    text = (response or "").lower()
+    for key, value in patient_profile.items():
+        if value and value.lower() in text:
+            return True
+        if key.lower() in text and value and any(part.lower() in text for part in str(value).split()[:3]):
+            return True
+    return False
+
+
 def run_finetuned_only(query: str) -> dict:
     start = time.time()
     response = llm.create_chat_completion(

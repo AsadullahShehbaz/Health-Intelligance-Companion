@@ -1,5 +1,5 @@
 import { API_BASE } from './config';
-import { getAccessToken, clearSession } from './session';
+import { authFetch, getAccessToken } from './session';
 
 export class ApiError extends Error {
   constructor(message, status) {
@@ -9,21 +9,16 @@ export class ApiError extends Error {
 }
 
 async function request(path, options = {}) {
-  const token = getAccessToken();
-  const url = `${API_BASE}${path}`;
+  // authFetch handles proactive refresh, 401 refresh-and-retry, and
+  // session cleanup + auth:unauthorized dispatch when refresh fails
+  let res;
+  try {
+    res = await authFetch(path, options);
+  } catch {
+    throw new ApiError('Unauthorized', 401);
+  }
 
-  const headers = {
-    'Content-Type': 'application/json',
-    ...(token && { Authorization: `Bearer ${token}` }),
-    ...options.headers,
-  };
-
-  const res = await fetch(url, { ...options, headers });
-
-  // Backend has NO /auth/refresh in Phase 5 — just logout on 401
   if (res.status === 401) {
-    clearSession();
-    window.dispatchEvent(new CustomEvent('auth:unauthorized'));
     throw new ApiError('Unauthorized', 401);
   }
 

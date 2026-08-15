@@ -320,6 +320,13 @@ def fake_store():
         def __init__(self):
             self._data: dict[tuple, dict[str, dict]] = {}
 
+        def get(self, namespace, key):
+            ns = tuple(namespace)
+            value = self._data.get(ns, {}).get(key)
+            if value is None:
+                return None
+            return SimpleNamespace(key=key, value=value)
+
         def search(self, namespace, query="", limit=5):
             ns = tuple(namespace)
             items = [
@@ -353,6 +360,7 @@ def sample_state():
             "retrieval_decision": "",
             "retrieved_docs": [],
             "saved_memory": False,
+            "remembered_context": "",
         }
         base.update(kwargs)
         return base

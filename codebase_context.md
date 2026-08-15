@@ -1775,7 +1775,7 @@ class Settings(BaseSettings):
     HF_TOKEN: str
     SECRET_KEY: str
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 15          # short-lived access token
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60          # short-lived access token (was 15, too short for slow local inference)
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7             # longer-lived refresh token
     RESET_TOKEN_EXPIRE_HOURS: int = 1              # password-reset token TTL
     VERIFY_TOKEN_EXPIRE_HOURS: int = 48            # email-verify token TTL
@@ -1796,7 +1796,7 @@ class Settings(BaseSettings):
 
     SERP_API_KEY : str
     GROQ_API_KEY : str
-    GROQ_MODEL: str = "llama-3.3-70b-versatile"  # fast & reliable free tool-calling model
+    GROQ_MODEL: str = "openai/gpt-oss-120b"  # fast & reliable free tool-calling model
     model_config = ConfigDict(env_file=".env", extra="ignore")
 
 
@@ -1976,15 +1976,18 @@ async def root():
 
 ```python
 # app/agent/graph.py
-"""Decoupled router-node pipeline.
+"""3-stage Remember → RAG Router → Chat pipeline.
 
-    Router (Groq, tool-calling)  ──tools?──▶  Tools  ──▶  BioMistral (local GGUF)  ──▶  END
-                        │
-                        └───── no tools ─────────────────▶  BioMistral  ──▶  END
+    Remember (gpt-oss-120b)
+        │ (remembered_context)
+        ▼
+    RAG Router (Groq, tool-calling)  ──tools?──▶  Tools  ──▶  Chat (local GGUF)  ──▶  END
+                            │
+                            └───── no tools ─────────────────▶  Chat  ──▶  END
 
-The router decides whether tools are needed and emits tool_calls; it never
-writes the final answer. Tool results are flattened into plain text and
-handed to the BioMistral node, which does a single clean inference turn.
+The Remember node extracts and deduplicates patient memories each turn.
+The RAG Router decides whether RAG tools are needed and emits tool_calls.
+The Chat node produces the final empathetic answer from the local GGUF model.
 """
 import re
 import time
@@ -1993,8 +1996,9 @@ from langchain_core.messages import AIMessage
 from langgraph.graph import END, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 
+from app.agent.nodes.remember_node import remember_node
 from app.agent.nodes.biomistral_node import biomistral_node
-from app.agent.nodes.router_node import router_node
+from app.agent.nodes.router_node import rag_router_node
 from app.agent.state import AgentState
 from app.agent.tools import TOOLS
 from app.db.lifespan import checkpointer, store
@@ -2004,18 +2008,19 @@ logger = get_logger(__name__)
 
 _tool_node = ToolNode(TOOLS)
 
+# Alias for clarity: the biomistral node is referred to as "chat" in the graph
+chat_node = biomistral_node
+
 
 def _extract_tool_metadata(tool_messages: list) -> dict:
-    """Flatten this turn's ToolMessages into plain text for BioMistral and
+    """Flatten this turn's ToolMessages into plain text for Chat and
     pull out the per-turn metadata flags the sidebar / response schema need.
 
     Only the *new* tool messages (returned by the ToolNode this turn) are
-    scanned, so needs_rag / saved_memory reflect the current turn, not the
-    accumulated history.
+    scanned, so needs_rag reflects the current turn, not the accumulated history.
     """
     extracted: list[str] = []
     rag_used = False
-    saved_memory = False
     sources: list[str] = []
 
     for msg in tool_messages:
@@ -2032,21 +2037,17 @@ def _extract_tool_metadata(tool_messages: list) -> dict:
                 if match:
                     sources.append(match.group(1))
 
-        if name in ("save_patient_fact", "save_emotional_state"):
-            saved_memory = True
-
     return {
         "tool_results": "\n".join(extracted),
         "needs_rag": rag_used,
         "retrieval_decision": "retrieved" if rag_used else "",
         "retrieved_docs": [{"source": s} for s in sources[:3]],
-        "saved_memory": saved_memory,
     }
 
 
 def _run_tools(state: AgentState) -> dict:
-    """Execute the router's tool calls, then fold the results into the
-    plain-text context + metadata BioMistral consumes."""
+    """Execute the RAG router's tool calls, then fold the results into the
+    plain-text context the Chat node consumes."""
     messages = state.get("messages", [])
 
     if messages:
@@ -2071,19 +2072,19 @@ def _run_tools(state: AgentState) -> dict:
     return result
 
 
-def _route_after_router(state: AgentState) -> str:
-    """tools_condition wrapper: route to 'tools' when the router emitted
-    tool_calls, otherwise straight to the BioMistral reasoning node.
+def _route_after_rag_router(state: AgentState) -> str:
+    """tools_condition wrapper: route to 'tools' when the RAG router emitted
+    tool_calls, otherwise straight to the Chat node.
 
     tools_condition raises on an empty message list; the router always
     persists at least the user's HumanMessage before this runs, but we guard
     the empty case so a unit call can't crash the graph.
     """
     if not state.get("messages"):
-        route = "biomistral"
+        route = "chat"
     else:
-        route = "tools" if tools_condition(state) == "tools" else "biomistral"
-    logger.info("↪ Router routing → %s", route)
+        route = "tools" if tools_condition(state) == "tools" else "chat"
+    logger.info("↪ RAG Router routing → %s", route)
     return route
 
 
@@ -2091,36 +2092,74 @@ def build_health_agent():
     graph = StateGraph(AgentState)
 
     # 1. Add nodes
-    graph.add_node("router", router_node)
+    graph.add_node("remember", remember_node)
+    graph.add_node("rag_router", rag_router_node)
     graph.add_node("tools", _run_tools)
-    graph.add_node("biomistral", biomistral_node)
+    graph.add_node("chat", chat_node)
 
     # 2. Entry point
-    graph.set_entry_point("router")
+    graph.set_entry_point("remember")
 
-    # 3. Conditional routing from the router
+    # 3. Remember feeds into RAG Router
+    graph.add_edge("remember", "rag_router")
+
+    # 4. Conditional routing from the RAG Router
     graph.add_conditional_edges(
-        "router",
-        _route_after_router,
+        "rag_router",
+        _route_after_rag_router,
         {
-            "tools": "tools",        # router outputted tool_calls
-            "biomistral": "biomistral",  # no tools → straight to reasoning
+            "tools": "tools",        # rag_router outputted tool_calls
+            "chat": "chat",          # no tools → straight to chat
         },
     )
 
-    # 4. Tools feed their context into BioMistral
-    graph.add_edge("tools", "biomistral")
+    # 5. Tools feed their context into Chat
+    graph.add_edge("tools", "chat")
 
-    # 5. BioMistral ends the turn
-    graph.add_edge("biomistral", END)
+    # 6. Chat ends the turn
+    graph.add_edge("chat", END)
 
     compiled = graph.compile(
         checkpointer=checkpointer,
         store=store,
     )
 
-    logger.info("✓ Health agent graph compiled (router → tools? → biomistral → END)")
+    logger.info("✓ Health agent graph compiled (remember → rag_router → tools? → chat → END)")
     return compiled
+
+```
+
+---
+
+## File: `app\agent\memory_schema.py`
+
+```python
+# app/agent/memory_schema.py
+"""Structured-output schema for the Remember node.
+
+Directly ports MemoryItem / MemoryDecision from 14-memory-store.ipynb.
+Kept in its own module (not agent/state.py) because these are LLM
+structured-output contracts, not graph state.
+"""
+from typing import List
+
+from pydantic import BaseModel, Field
+
+
+class MemoryItem(BaseModel):
+    text: str = Field(description="Atomic user/patient memory as a short sentence")
+    is_new: bool = Field(
+        description="True if this memory is NEW and should be stored. "
+        "False if it duplicates/overlaps something already known."
+    )
+
+
+class MemoryDecision(BaseModel):
+    should_write: bool = Field(description="Whether to store any memories this turn")
+    memories: List[MemoryItem] = Field(
+        default_factory=list,
+        description="Atomic memories extracted from the user's latest message",
+    )
 
 ```
 
@@ -2140,6 +2179,9 @@ class AgentState(TypedDict):
     tool_results: str      # plain text gathered from tools this turn, shown to BioMistral
     raw_input: str
     messages: Annotated[list, add_messages]
+
+    # NEW — populated by remember_node, consumed by biomistral_node
+    remembered_context: str   # formatted "- fact\n- fact" block, always present
 
     # Metadata flags — read straight from checkpoint rows by
     # conversation_service.py to build the sidebar. Don't rename these
@@ -2165,12 +2207,16 @@ class AgentState(TypedDict):
 
 ```python
 # app/agent/tools.py
+import re
+import time
 import uuid
 from datetime import date
 
+import psycopg
 from langchain_core.tools import tool
 
 from app.db.lifespan import store
+from app.db.pool import run_with_retry
 from app.core.rag.rag_tool import perform_direct_rag
 from app.core.rag.corrective_rag import web_search_fallback
 from app.utils.logging_config import get_logger
@@ -2178,28 +2224,194 @@ from app.utils.logging_config import get_logger
 logger = get_logger(__name__)
 
 
+class MemoryPersistenceError(Exception):
+    """Raised when a store.put() cannot be confirmed via read-back."""
+
+
+def _normalize_field_key(field: str) -> str:
+    """Turn any free-text field label into a stable storage key.
+    'Emergency Contact', 'emergency  contact' -> 'emergency_contact'.
+    Kept intentionally permissive — this store is NOT limited to a
+    fixed set of fields; any identity/background fact is allowed.
+    """
+    key = field.strip().lower()
+    key = re.sub(r"[^a-z0-9]+", "_", key).strip("_")
+    return key or "unlabeled_fact"
+
+
+def _verified_put(namespace, key, value, retries: int = 1):
+    """Write a value to the store and confirm by read-back before reporting success."""
+    for attempt in range(retries + 1):
+        try:
+            run_with_retry(store.put, namespace, key, value)
+            confirmed = run_with_retry(store.get, namespace, key)
+        except psycopg.OperationalError:
+            if attempt >= retries:
+                raise
+            logger.warning(
+                "Transient DB error in memory write confirmation (attempt %d/%d), retrying...",
+                attempt + 1,
+                retries + 1,
+            )
+            time.sleep(0.5)
+            continue
+
+        if confirmed is None:
+            if attempt >= retries:
+                raise MemoryPersistenceError(f"Write to {namespace}/{key} was not confirmed")
+            logger.warning(
+                "Memory write not confirmed on attempt %d/%d; retrying...",
+                attempt + 1,
+                retries + 1,
+            )
+            continue
+
+        confirmed_value = getattr(confirmed, "value", confirmed)
+        if isinstance(value, dict) and isinstance(confirmed_value, dict):
+            if confirmed_value != value:
+                if attempt >= retries:
+                    raise MemoryPersistenceError(f"Write to {namespace}/{key} was not confirmed")
+                logger.warning(
+                    "Memory write mismatch on attempt %d/%d; retrying...",
+                    attempt + 1,
+                    retries + 1,
+                )
+                continue
+        elif confirmed_value != value:
+            if attempt >= retries:
+                raise MemoryPersistenceError(f"Write to {namespace}/{key} was not confirmed")
+            logger.warning(
+                "Memory write mismatch on attempt %d/%d; retrying...",
+                attempt + 1,
+                retries + 1,
+            )
+            continue
+
+        logger.info("✓ Confirmed memory write | namespace=%s | key=%s", namespace, key)
+        return confirmed
+
+    raise MemoryPersistenceError(f"Write to {namespace}/{key} was not confirmed")
+
+
 @tool
 def fetch_patient_facts(patient_id: str, query: str) -> str:
-    """Retrieve relevant medical facts about a patient from persistent memory.
-    Use when the patient refers to past symptoms or history."""
+    """Retrieve relevant MEDICAL/symptom history about a patient from persistent
+    memory (e.g. past complaints, onset dates, resolved conditions).
+    Do NOT use this for identity/background questions (name, age, occupation,
+    etc.) — use fetch_patient_profile for that."""
     logger.info("▶ fetch_patient_facts | patient=%s | query=%s", patient_id, query[:80])
     if store is None:
         logger.warning("Memory store not available for fetch_patient_facts")
         return "Memory store not available."
     try:
-        items = store.search(("patient_facts", patient_id), query=query, limit=5)
+        items = run_with_retry(store.search, ("patient_facts", patient_id), query=query, limit=5)
         facts = [item.value for item in items]
         if not facts:
             logger.info("No patient history found | patient=%s", patient_id)
             return "No relevant patient history found."
-        logger.info("✓ Fetched %d patient facts | patient=%s", len(facts), patient_id)
-        
-        lines = [f"- {f['symptom']} (onset: {f['onset']}, status: {f['status']})" for f in facts]
-        logger.info(f"Tool output payload: {lines}")
+
+        lines = []
+        for f in facts:
+            if not isinstance(f, dict) or "symptom" not in f:
+                logger.warning(
+                    "Skipping malformed patient_facts record | patient=%s | record=%s",
+                    patient_id, f,
+                )
+                continue
+            lines.append(
+                f"- {f['symptom']} (onset: {f.get('onset', 'unknown')}, "
+                f"status: {f.get('status', 'unknown')})"
+            )
+
+        if not lines:
+            return "No relevant patient history found."
+
+        logger.info("✓ Fetched %d patient facts | patient=%s", len(lines), patient_id)
         return "Known patient history:\n" + "\n".join(lines)
     except Exception as e:
         logger.exception("fetch_patient_facts failed")
         return f"Error retrieving patient facts: {e}"
+
+
+@tool
+def fetch_patient_profile(patient_id: str) -> str:
+    """Retrieve ALL saved identity/background details about the patient — name,
+    age, occupation, family info, emergency contact, preferences, or anything
+    else previously stated. Use this for any question about the patient's own
+    non-medical personal details. Returns everything on file, not a fixed
+    field list, so it reflects however much or little has actually been saved."""
+    logger.info("▶ fetch_patient_profile | patient=%s", patient_id)
+    if store is None:
+        logger.warning("Memory store not available for fetch_patient_profile")
+        return "Memory store not available."
+    try:
+        # No query = return everything under this namespace, not a
+        # semantic-similarity subset. This is a profile, not a search index.
+        items = run_with_retry(store.search, ("patient_profile", patient_id), limit=100)
+        if not items:
+            logger.info("No profile data found | patient=%s", patient_id)
+            return "No profile information saved for this patient yet."
+
+        lines = []
+        for item in items:
+            v = item.value
+            if not isinstance(v, dict) or "value" not in v:
+                continue
+            lines.append(f"- {item.key}: {v['value']}")
+
+        if not lines:
+            return "No profile information saved for this patient yet."
+
+        logger.info("✓ Fetched %d patient profile fields | patient=%s", len(lines), patient_id)
+        return "Known patient profile:\n" + "\n".join(lines)
+    except Exception as e:
+        logger.exception("fetch_patient_profile failed")
+        return f"Error retrieving patient profile: {e}"
+
+
+@tool
+def save_patient_profile(patient_id: str, field: str, value: str, source_message: str) -> str:
+    """Save or update ANY identity/background fact the patient states about
+    themselves — name, age, gender, occupation, city, family details,
+    emergency contact, allergies to non-medical things, preferences, etc.
+    field is a free-text label (e.g. 'name', 'occupation', 'emergency contact')
+    — it is NOT restricted to a fixed list. Call this once per distinct fact
+    stated. Saving the same field again overwrites the previous value."""
+    logger.info(
+        "▶ save_patient_profile | patient=%s | field=%s | value=%s",
+        patient_id, field, value,
+    )
+    if store is None:
+        logger.warning("Memory store not available for save_patient_profile")
+        return "Memory store not available."
+
+    if not field.strip() or not value.strip():
+        return "Both field and value are required to save a profile fact."
+
+    normalized_key = _normalize_field_key(field)
+
+    try:
+        run_with_retry(store.put, ("patient_profile", patient_id), normalized_key, {
+            "label": field.strip(),
+            "value": value.strip(),
+            "recorded_on": date.today().isoformat(),
+            "source_message": source_message,
+        })
+
+        confirmed = store.get(("patient_profile", patient_id), normalized_key)
+        if not confirmed:
+            return "MEMORY_ERROR: could not save profile field — do not tell the patient this was saved."
+        logger.info("✓ Saved patient profile field | patient=%s | key=%s", patient_id, normalized_key)
+        return f"Saved to patient profile: {field.strip()} = {value.strip()}"
+    except Exception as e:
+        logger.error(
+            "MEMORY_SAVE_FAILED | patient=%s | field=%s | error=%s",
+            patient_id,
+            normalized_key,
+            e,
+        )
+        logger.exception("save_patient_profile failed")
+        return "MEMORY_ERROR: could not save profile field — do not tell the patient this was saved."
 
 
 @tool
@@ -2220,27 +2432,40 @@ def retrieve_medical_knowledge(query: str) -> str:
 
 @tool
 def save_patient_fact(patient_id: str, symptom: str, onset: str, status: str, source_message: str) -> str:
-    """Save a newly reported symptom to the patient's persistent record."""
+    """Save a newly reported MEDICAL SYMPTOM to the patient's persistent record.
+    Do NOT use this for identity/background info — use save_patient_profile."""
     logger.info(
         "▶ save_patient_fact | patient=%s | symptom=%s | status=%s",
-        patient_id,
-        symptom,
-        status,
+        patient_id, symptom, status,
     )
     if store is None:
         logger.warning("Memory store not available for save_patient_fact")
         return "Memory store not available."
     key = f"{symptom}_{date.today().isoformat()}_{uuid.uuid4().hex[:4]}"
+    payload = {
+        "symptom": symptom,
+        "onset": onset,
+        "status": status,
+        "recorded_on": date.today().isoformat(),
+        "source_message": source_message,
+    }
     try:
-        store.put(("patient_facts", patient_id), key, {
-            "symptom": symptom, "onset": onset, "status": status,
-            "recorded_on": date.today().isoformat(), "source_message": source_message,
-        })
+        _verified_put(("patient_facts", patient_id), key, payload, retries=1)
         logger.info("✓ Saved patient fact | patient=%s | key=%s", patient_id, key)
         return f"Saved to patient record: {symptom} ({status})"
+    except MemoryPersistenceError:
+        logger.error(
+            "MEMORY_SAVE_UNCONFIRMED | patient=%s | field=%s",
+            patient_id,
+            symptom,
+        )
+        return (
+            f"MEMORY_ERROR: could not confirm save of '{symptom}' — "
+            "do not tell the patient this was saved."
+        )
     except Exception as e:
         logger.exception("save_patient_fact failed")
-        return f"Error saving fact: {e}"
+        return f"MEMORY_ERROR: could not save fact '{symptom}' — do not tell the patient this was saved."
 
 
 @tool
@@ -2248,24 +2473,36 @@ def save_emotional_state(patient_id: str, emotion: str, intensity: str, trigger:
     """Save the patient's emotional state when they express anxiety, stress, or fear."""
     logger.info(
         "▶ save_emotional_state | patient=%s | emotion=%s | intensity=%s",
-        patient_id,
-        emotion,
-        intensity,
+        patient_id, emotion, intensity,
     )
     if store is None:
         logger.warning("Memory store not available for save_emotional_state")
         return "Memory store not available."
     key = f"emotion_{date.today().isoformat()}_{uuid.uuid4().hex[:4]}"
+    payload = {
+        "emotion": emotion,
+        "intensity": intensity,
+        "trigger": trigger,
+        "recorded_on": date.today().isoformat(),
+        "source_message": source_message,
+    }
     try:
-        store.put(("patient_emotions", patient_id), key, {
-            "emotion": emotion, "intensity": intensity, "trigger": trigger,
-            "recorded_on": date.today().isoformat(), "source_message": source_message,
-        })
+        _verified_put(("patient_emotions", patient_id), key, payload, retries=1)
         logger.info("✓ Saved emotional state | patient=%s | key=%s", patient_id, key)
         return f"Noted emotional state: {emotion} ({intensity})"
+    except MemoryPersistenceError:
+        logger.error(
+            "MEMORY_SAVE_UNCONFIRMED | patient=%s | field=%s",
+            patient_id,
+            emotion,
+        )
+        return (
+            f"MEMORY_ERROR: could not confirm save of '{emotion}' — "
+            "do not tell the patient this was saved."
+        )
     except Exception as e:
         logger.exception("save_emotional_state failed")
-        return f"Error saving emotion: {e}"
+        return f"MEMORY_ERROR: could not save emotion '{emotion}' — do not tell the patient this was saved."
 
 
 @tool
@@ -2283,7 +2520,12 @@ def search_web_medical(query: str) -> str:
         return f"Error executing web search: {e}"
 
 
-TOOLS = [fetch_patient_facts, retrieve_medical_knowledge, save_patient_fact, save_emotional_state, search_web_medical]
+TOOLS = [
+    fetch_patient_facts,
+    fetch_patient_profile,
+    retrieve_medical_knowledge,
+    search_web_medical,
+]
 ```
 
 ---
@@ -2292,9 +2534,9 @@ TOOLS = [fetch_patient_facts, retrieve_medical_knowledge, save_patient_fact, sav
 
 ```python
 # app/agent/nodes/biomistral_node.py
-"""Node 2 — BioMistral reasoning.
+"""Node 3 — Chat.
 
-Receives the raw user input along with any plain-text context the router's
+Receives the raw user input along with any plain-text context the RAG/router's
 tools gathered this turn (memory + RAG) and produces the final empathetic
 answer from the local GGUF model. Because tool-calling is offloaded to the
 router, this node does a single clean inference turn with no JSON or
@@ -2305,6 +2547,7 @@ import time
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from app.agent.state import AgentState
+from app.agent.nodes.prompts import BIOMISTRAL_PROMPT
 from app.core.llm import llm
 from app.utils.logging_config import get_logger
 
@@ -2314,40 +2557,23 @@ logger = get_logger(__name__)
 # blow its context window.
 _OCR_CHAR_LIMIT = 2000
 
-BIOMISTRAL_PROMPT = """You are an empathetic Pakistani AI health companion.
-
-Use the provided medical & patient context below (if available) to answer the user's health concerns.
-
-
-{ocr_context}
-
-{tool_context}
-
-
-GUIDELINES:
-- If the query is plain conversational/greeting, reply naturally in plain text.
-- If it is a medical query, respond conversationally based on the context. You can recommend these things where helpful:
-  - Possible diagnosis or insights
-  - Lifestyle adjustments, diet, and exercise suggestions
-  - Home care or general advice
-  - Clear advice on when to consult a doctor
-- Never invent facts outside the provided context.
-- When patient facts (e.g., name, age, history) are retrieved from tools, you MUST explicitly reference them in your final response when answering the user.
-"""
-
 
 def biomistral_node(state: AgentState) -> dict:
-    logger.info("▶ BioMistral Reasoning Node Started")
+    logger.info("▶ Chat Node Started")
 
     ocr_raw = (state.get("ocr_context") or "")[:_OCR_CHAR_LIMIT]
     ocr_str = f"OCR Document Context:\n{ocr_raw}" if ocr_raw else "No OCR text attached."
 
     tool_str = state.get("tool_results") or "No external context retrieved."
+    remembered = state.get("remembered_context") or "(no known patient history yet)"
 
     formatted_system = BIOMISTRAL_PROMPT.format(
         ocr_context=ocr_str,
         tool_context=tool_str,
+        patient_memory=remembered,
     )
+
+    user_question = (state.get("raw_input") or "").strip()
 
     # Single clean inference turn: system prompt (with gathered context) +
     # the user's raw input only. The router already persisted the user
@@ -2355,11 +2581,11 @@ def biomistral_node(state: AgentState) -> dict:
     # conversation pair without re-inserting the HumanMessage.
     messages = [
         SystemMessage(content=formatted_system),
-        HumanMessage(content=state["raw_input"]),
+        HumanMessage(content=user_question),
     ]
 
     logger.info(
-        "BioMistral invoked with %d messages | patient=%s",
+        "Chat (BioMistral) invoked with %d messages | patient=%s",
         len(messages),
         state["patient_id"],
     )
@@ -2379,7 +2605,7 @@ def biomistral_node(state: AgentState) -> dict:
         response = AIMessage(content=answer_text)
 
     logger.info(
-        "✓ BioMistral produced final answer | patient=%s | chars=%d",
+        "✓ Chat (BioMistral) produced final answer | patient=%s | chars=%d",
         state["patient_id"],
         len(answer_text),
     )
@@ -2396,18 +2622,197 @@ def biomistral_node(state: AgentState) -> dict:
 
 ---
 
+## File: `app\agent\nodes\prompts.py`
+
+```python
+BIOMISTRAL_PROMPT = """You are an empathetic Pakistani AI health companion.
+
+Use the provided medical & patient context below (if available) to answer the user's health concerns.
+
+Known patient memory (facts remembered across conversations):
+{patient_memory}
+
+{ocr_context}
+{tool_context}
+
+CRITICAL CONTEXT RULES:
+- Use the patient memory above naturally and accurately when relevant to the
+  user's question. Do not say "I don't know anything about you" if the
+  memory block above is non-empty.
+- Never invent facts outside the provided context (memory, tool results, or OCR).
+- If the tool context contains a MEMORY_ERROR: or MEMORY_SAVE_FAILED marker, never claim the patient memory was saved or say "I remembered that." Treat the memory as unavailable and continue without asserting any saved patient fact.
+- If the tool context contains a string beginning with MEMORY_ERROR:, do not tell the user the fact was saved or remembered; instead, ask them to repeat it or state that the save failed without fabricating confirmation.
+
+GUIDELINES:
+- If the query is plain conversational/greeting, reply naturally in plain text.
+- If it is a medical query, respond conversationally based on the context. You can recommend these things where helpful:
+  - Possible diagnosis or insights
+  - Lifestyle adjustments, diet, and exercise suggestions
+  - Home care or general advice
+  - Clear advice on when to consult a doctor
+- When patient facts (e.g., name, age, history) are retrieved from memory or tools, you MUST explicitly reference them in your final response when answering the user.
+"""
+```
+
+---
+
+## File: `app\agent\nodes\remember_node.py`
+
+```python
+# app/agent/nodes/remember_node.py
+"""Node 1 — Remember.
+
+Runs before RAG/routing on every turn. Loads existing patient memories from
+the Postgres store, asks gpt-oss-120b (via Groq, structured output) to
+extract atomic facts from the user's latest message and flag which are
+genuinely new, then writes only the new ones back to the store.
+
+This mirrors 14-memory-store.ipynb's remember_node 1:1, adapted from
+InMemoryStore to the app's PostgresStore and from MessagesState to
+AgentState.
+"""
+import time
+import uuid
+
+from langchain_core.messages import SystemMessage
+
+from app.agent.memory_schema import MemoryDecision
+from app.agent.state import AgentState
+from app.config import settings
+from app.db.lifespan import store
+from app.db.pool import run_with_retry
+from app.utils.logging_config import get_logger
+from langchain_groq import ChatGroq
+
+logger = get_logger(__name__)
+
+# Same model as the router — gpt-oss-120b via Groq, per the architecture
+# diagram. Kept as a separate instance (not router_llm) because this one
+# uses structured output, not tool-calling.
+_memory_llm = ChatGroq(
+    api_key=settings.GROQ_API_KEY,
+    model_name=settings.GROQ_MODEL,   # "openai/gpt-oss-120b"
+    temperature=0.0,
+).with_structured_output(MemoryDecision)
+
+MEMORY_NAMESPACE = "patient_memories"  # store namespace segment
+
+
+def _namespace(patient_id: str) -> tuple:
+    return (MEMORY_NAMESPACE, patient_id)
+
+
+def _load_existing_memories(patient_id: str) -> list[str]:
+    """Everything currently on file for this patient, as plain sentences."""
+    try:
+        items = run_with_retry(store.search, _namespace(patient_id), limit=200)
+    except Exception:
+        logger.exception("Failed to load existing memories | patient=%s", patient_id)
+        return []
+    texts = [item.value.get("data", "") for item in items if item.value.get("data")]
+    return texts
+
+
+def _format_existing(texts: list[str]) -> str:
+    return "\n".join(f"- {t}" for t in texts) if texts else "(empty)"
+
+
+REMEMBER_SYSTEM_PROMPT = """You are responsible for updating and maintaining accurate patient memory
+for a healthcare companion system.
+
+CURRENT PATIENT DETAILS (existing memories):
+{existing_memories}
+
+TASK:
+- Review the patient's latest message.
+- Extract patient-specific info worth storing long-term: identity/background
+  facts (name, age, occupation, family, emergency contact, preferences),
+  medical symptoms, onset/status, and emotional state when clearly expressed.
+- For each extracted item, set is_new=true ONLY if it adds NEW information
+  compared to CURRENT PATIENT DETAILS.
+- If it is basically the same meaning as something already present, set
+  is_new=false.
+- Keep each memory as a short atomic sentence.
+- No speculation; only facts stated by the patient.
+- If there is nothing memory-worthy (e.g. a greeting, a question with no new
+  personal info), return should_write=false and an empty list.
+"""
+
+
+def remember_node(state: AgentState) -> dict:
+    patient_id = state["patient_id"]
+    logger.info("▶ Remember Node Started | patient=%s", patient_id)
+
+    if store is None:
+        logger.warning("Memory store not available — skipping remember step")
+        return {"remembered_context": "", "saved_memory": False}
+
+    existing_texts = _load_existing_memories(patient_id)
+    existing_block = _format_existing(existing_texts)
+
+    user_message = (state.get("raw_input") or "").strip()
+    if not user_message:
+        logger.info("No user input to extract memories from | patient=%s", patient_id)
+        return {
+            "remembered_context": existing_block,
+            "saved_memory": False,
+        }
+
+    system_msg = SystemMessage(content=REMEMBER_SYSTEM_PROMPT.format(existing_memories=existing_block))
+
+    start = time.monotonic()
+    try:
+        decision: MemoryDecision = _memory_llm.invoke([
+            system_msg,
+            {"role": "user", "content": user_message},
+        ])
+    except Exception:
+        logger.exception("Memory extraction failed | patient=%s", patient_id)
+        # Fail open: don't block the turn on a memory-extraction error.
+        return {"remembered_context": existing_block, "saved_memory": False}
+    logger.info("✓ Remember LLM call finished in %.2fs", time.monotonic() - start)
+
+    newly_written: list[str] = []
+    if decision.should_write:
+        for mem in decision.memories:
+            if not mem.is_new:
+                continue
+            try:
+                run_with_retry(
+                    store.put,
+                    _namespace(patient_id),
+                    str(uuid.uuid4()),
+                    {"data": mem.text},
+                )
+                newly_written.append(mem.text)
+            except Exception:
+                logger.exception(
+                    "Failed to persist memory | patient=%s | text=%s",
+                    patient_id, mem.text,
+                )
+
+    if newly_written:
+        logger.info(
+            "✓ Wrote %d new memories | patient=%s", len(newly_written), patient_id,
+        )
+
+    # Rebuild the context block including anything just written, so the
+    # downstream RAG/router and Chat nodes see the fully up-to-date picture
+    # without a second DB round-trip.
+    final_texts = existing_texts + newly_written
+    return {
+        "remembered_context": _format_existing(final_texts),
+        "saved_memory": bool(newly_written),
+    }
+
+```
+
+---
+
 ## File: `app\agent\nodes\router_node.py`
 
 ```python
 # app/agent/nodes/router_node.py
-"""Node 1 — Router.
-
-A fast Groq model (llama-3.3-70b-versatile) bound with the healthcare tools
-decides whether the turn needs any tools (memory / RAG) and emits the
-tool_calls when it does. It never produces the final answer — that is the
-BioMistral node's job — so on a no-tool turn the router stores only the
-user's message (no intermediate assistant text that would pollute history).
-"""
 import time
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -2420,22 +2825,22 @@ from app.utils.logging_config import get_logger
 
 logger = get_logger(__name__)
 
-# Groq is used strictly for routing / tool-calling — reliable .bind_tools()
-# support that the local GGUF model can't do cleanly.
 router_llm = ChatGroq(
     api_key=settings.GROQ_API_KEY,
     model_name=settings.GROQ_MODEL,
     temperature=0.0,
 ).bind_tools(TOOLS)
 
-ROUTER_SYSTEM_PROMPT = """You are an expert triage and tool routing agent for a healthcare companion system.
+ROUTER_SYSTEM_PROMPT = """You are an expert triage and RAG (Retrieval-Augmented Generation) routing agent for a healthcare companion system.
 Your job is to analyze the user's input and call the APPROPRIATE tool(s) based on strict criteria:
 
 CRITICAL INSTRUCTIONS:
+
 1. Medical Symptoms/Queries: If the user mentions ANY medical symptom, pain, illness, medication, or medical question (e.g., "headache", "stomach pain", "fever", "medication advice"), you MUST call 'retrieve_medical_knowledge' or 'search_web_medical'.
-2. Patient History Elicitation: If the user asks about past visits, past symptoms, or recorded medical conditions, you MUST call 'fetch_patient_facts'.
-3. Recording Facts: If the user explicitly states new personal health details, diagnosis, age, or symptom onset (e.g., "I have had a headache for 2 days"), you MUST call 'save_patient_fact'.
-4. Emotion/Distress: If the user expresses severe anxiety, fear, or panic, call 'save_emotional_state'.
+
+2. Patient History Retrieval: If the user asks about past visits, past symptoms, or recorded medical conditions, you MUST call 'fetch_patient_facts'.
+
+3. Identity/Background Questions: If the user asks about their OWN previously-stated personal details (name, age, occupation, or anything else non-medical), you MUST call 'fetch_patient_profile', which returns everything saved. NEVER call 'fetch_patient_facts' for this — that tool only covers medical/symptom history.
 
 EXCEPTIONS:
 - ONLY skip calling tools if the message is purely conversational (e.g., "Hello", "Hi", "Thank you", "Who are you?", "Good morning").
@@ -2445,8 +2850,8 @@ Patient ID: {patient_id}
 
 # File: app/agent/nodes/router_node.py
 
-def router_node(state: AgentState) -> dict:
-    logger.info("▶ Router Node Started | patient=%s", state["patient_id"])
+def rag_router_node(state: AgentState) -> dict:
+    logger.info("▶ RAG Router Node Started | patient=%s", state["patient_id"])
 
     system_msg = SystemMessage(content=ROUTER_SYSTEM_PROMPT.format(patient_id=state["patient_id"]))
     
@@ -2492,9 +2897,12 @@ def router_node(state: AgentState) -> dict:
 # app/api/agent.py
 import time
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
+from openai import APIConnectionError
 from starlette.concurrency import run_in_threadpool
 
+from app.config import settings
 from app.deps import get_current_user
 from app.models.user import User
 from app.schemas.agent import (
@@ -2534,6 +2942,19 @@ async def invoke(req: AgentRequest):
             req.patient_id,
         )
         return result
+    except (APIConnectionError, httpx.ConnectError, httpx.HTTPError) as e:
+        logger.exception(
+            "✗ POST /agent/invoke failed because the LLM backend is unavailable after %.2fs | patient=%s",
+            time.monotonic() - start,
+            req.patient_id,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "LLM backend unavailable. Start the local model server or fix "
+                f"LLM_BASE_URL={settings.LLM_BASE_URL}."
+            ),
+        ) from e
     except Exception as e:
         logger.exception(
             "✗ POST /agent/invoke failed after %.2fs | patient=%s",
@@ -2591,23 +3012,33 @@ async def load_thread(thread_id: str, user: User = Depends(get_current_user)):
 ## File: `app\api\auth.py`
 
 ```python
-"""Auth router — simplified to Register + Login (Phase 5).
+"""Auth router — Register, Login, Refresh, and Logout.
 
-Forgot/reset password, change password, delete account, email verification,
-and token refresh were all removed to keep the project focused on chat
-history. If the React frontend still calls those endpoints, those calls
-will 404 until the frontend is updated to match.
+Implements a real refresh-token flow:
+- Access tokens are short-lived JWTs (60 min default)
+- Refresh tokens are opaque, hashed-at-rest, revocable credentials (7 days default)
+- /auth/refresh exchanges a valid refresh token for a new access + refresh pair
+- /auth/logout revokes the refresh token server-side
 """
 
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import create_access_token, hash_password, verify_password
+from app.core.security import (
+    create_access_token,
+    generate_refresh_token,
+    hash_token,
+    hash_password,
+    verify_password,
+)
 from app.deps import get_current_user
 from app.db.session import get_db
 from app.models.user import User
-from app.schemas.auth import LoginRequest, RegisterRequest, TokenResponse
+from app.models.refresh_token import RefreshToken
+from app.config import settings
+from app.schemas.auth import LoginRequest, RegisterRequest, RefreshTokenRequest, TokenResponse
 from app.utils.logging_config import log_auth_event
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -2623,15 +3054,30 @@ async def _get_user_by_email(db: AsyncSession, email: str) -> User | None:
     return result.scalar_one_or_none()
 
 
-def _issue_token_response(user: User) -> TokenResponse:
-    """Build the response the React client expects.
 
-    session.js stores both access_token and refresh_token — but the
-    refresh-token table/rotation flow is gone in Phase 5, so refresh_token
-    here is just a copy of access_token, not a real second credential.
+async def _issue_token_response(db: AsyncSession, user: User) -> TokenResponse:
+    """Issue a real refresh-token pair.
+    
+    Generates an opaque refresh token, persists its hash to the DB with an
+    expiry time, and returns both the access token (JWT) and the raw refresh
+    token (opaque) to the client.
+    
+    The refresh token is NOT persisted in plaintext — only its SHA256 hash
+    is stored, so a compromised DB doesn't leak valid tokens.
     """
     access_token = create_access_token(data={"sub": str(user.id)})
-    return TokenResponse(access_token=access_token, refresh_token=access_token)
+    
+    raw_refresh = generate_refresh_token()
+    refresh_token_row = RefreshToken(
+        user_id=user.id,
+        token_hash=hash_token(raw_refresh),
+        expires_at=datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
+    )
+    db.add(refresh_token_row)
+    await db.commit()
+    
+    return TokenResponse(access_token=access_token, refresh_token=raw_refresh)
+
 
 
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
@@ -2659,7 +3105,7 @@ async def register(
     await db.refresh(user)
 
     log_auth_event("REGISTER", user.username, str(user.id), request.client.host, success=True)
-    return _issue_token_response(user)
+    return await _issue_token_response(db, user)
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -2683,9 +3129,88 @@ async def login(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is inactive.")
 
     log_auth_event("LOGIN", user.username, str(user.id), ip, success=True)
-    return _issue_token_response(user)
+    return await _issue_token_response(db, user)
 
-@router.get("/me")
+
+@router.post("/refresh", response_model=TokenResponse)
+async def refresh(
+    body: RefreshTokenRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Exchange a valid refresh token for a new access + refresh pair.
+    
+    Implements token rotation: the old refresh token is revoked, preventing
+    replay of a stolen token after its first use. This is the recommended
+    way to invalidate tokens — far better than relying on client-side deletion
+    alone.
+    """
+    token_hash = hash_token(body.refresh_token)
+    result = await db.execute(
+        select(RefreshToken).where(RefreshToken.token_hash == token_hash)
+    )
+    stored = result.scalar_one_or_none()
+
+    # Check for invalid, revoked, or expired token
+    if (
+        stored is None
+        or stored.revoked
+        or stored.expires_at < datetime.now(timezone.utc)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired refresh token",
+        )
+
+    # Fetch the user to make sure they're still active
+    user = await db.get(User, stored.user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired refresh token",
+        )
+
+    # Rotate: revoke the old token and issue a new pair.
+    # This prevents replay of a stolen refresh token past its first use.
+    stored.revoked = True
+    await db.commit()
+
+    logger = __import__("app.utils.logging_config", fromlist=["get_logger"]).get_logger(__name__)
+    logger.info("✓ Refresh token rotated | user=%s", user.id)
+
+    return await _issue_token_response(db, user)
+
+
+@router.post("/logout")
+async def logout(
+    body: RefreshTokenRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Revoke a refresh token server-side, effectively logging out the session.
+    
+    Unlike just deleting the frontend's local copy of the token, this actually
+    invalidates the token in the DB, preventing any further use (even if the
+    frontend's token is recovered or leaked).
+    """
+    token_hash = hash_token(body.refresh_token)
+    result = await db.execute(
+        select(RefreshToken).where(RefreshToken.token_hash == token_hash)
+    )
+    stored = result.scalar_one_or_none()
+
+    if stored is None:
+        # Token doesn't exist or is already revoked — that's fine, logout is idempotent
+        return {"message": "Logged out"}
+
+    # Revoke the token
+    stored.revoked = True
+    await db.commit()
+
+    logger = __import__("app.utils.logging_config", fromlist=["get_logger"]).get_logger(__name__)
+    logger.info("✓ User logged out | user=%s", stored.user_id)
+
+    return {"message": "Logged out"}
+
+
 async def get_current_user(user: User = Depends(get_current_user)):
     return user    
 ```
@@ -2783,6 +3308,7 @@ async def stream(req: ChatRequest):
 
 ```python
 # app/core/llm.py
+import httpx
 from langchain_openai import ChatOpenAI
 
 from app.config import settings
@@ -2790,13 +3316,44 @@ from app.utils.logging_config import get_logger
 
 logger = get_logger(__name__)
 
+
+def validate_llm_connection() -> None:
+    """Check that the configured OpenAI-compatible model server is reachable.
+
+    The app may start successfully even when the assistant backend is down, so we
+    fail with a clear, actionable error instead of exposing a raw socket error to
+    the API client.
+    """
+    if not settings.LLM_BASE_URL:
+        raise RuntimeError(
+            "LLM backend is not configured. Set LLM_BASE_URL in your environment or .env file."
+        )
+
+    try:
+        response = httpx.get(settings.LLM_BASE_URL, timeout=5)
+    except httpx.HTTPError as exc:
+        raise RuntimeError(
+            "LLM backend is unreachable at "
+            f"{settings.LLM_BASE_URL}. Start the local llama-server or set the correct "
+            "LLM_BASE_URL / LLM_API_KEY in .env."
+        ) from exc
+
+    if response.status_code not in {200, 404, 405}:
+        raise RuntimeError(
+            "LLM backend responded with an error at "
+            f"{settings.LLM_BASE_URL} (HTTP {response.status_code}). "
+            "Check that the model server is running and the LLM configuration is correct."
+        )
+
+
 logger.info("Initializing LLM client (%s @ %s)", settings.LLM_MODEL, settings.LLM_BASE_URL)
 
 llm = ChatOpenAI(
     base_url=settings.LLM_BASE_URL,
     api_key=settings.LLM_API_KEY,
     model=settings.LLM_MODEL,
-    timeout=600
+    timeout=600,
+    max_retries=0,
 )
 
 logger.info("LLM client ready.")
@@ -2896,10 +3453,12 @@ def validate_password(password: str) -> list[PasswordError]:
 ## File: `app\core\security.py`
 
 ```python
-"""Password hashing, JWT management."""
+"""Password hashing, JWT management, and refresh token primitives."""
 
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+import hashlib
+import secrets
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
@@ -2978,7 +3537,32 @@ def decode_access_token(token: str) -> dict:
         logger.warning("JWT decode failed | reason=%s", e)
         raise
 
-def get_current_user(token: str = Depends(oauth2_scheme)):
+
+# ======================================================================
+# Refresh tokens (opaque random strings, hashed at rest)
+# ======================================================================
+
+
+def generate_refresh_token() -> str:
+    """Opaque, high-entropy refresh token — not a JWT, nothing to decode.
+    
+    Returns a cryptographically secure random string encoded in URL-safe base64.
+    """
+    return secrets.token_urlsafe(48)
+
+
+def hash_token(token: str) -> str:
+    """One-way hash for at-rest storage — same pattern as password reset tokens.
+    
+    The database stores only the hash; the unhashed token is sent to the client
+    and never persisted. This way, a compromised DB doesn't leak valid tokens.
+    """
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+# ======================================================================
+# Access control
+# ======================================================================
     try:
         payload = decode_access_token(token)
         user_id: str | None = payload.get("sub")
@@ -3491,11 +4075,38 @@ async def lifespan(app: FastAPI):
 
 ```python
 # File: app/db/pool.py
+import time
+
+import psycopg
 from psycopg_pool import ConnectionPool
+
 from app.config import settings
 from app.utils.logging_config import get_logger
 
 logger = get_logger(__name__)
+
+# Neon autosuspends an idle compute and kills its connections. The pool
+# reconnects on checkout, but the *first* query on a fresh connection can
+# still abort while the compute is waking — add the same single retry used
+# elsewhere for transient DB blips.
+_MAX_DB_RETRIES = 1
+_RETRY_DELAY_SECONDS = 0.5
+
+
+def run_with_retry(fn, *args, max_retries: int = _MAX_DB_RETRIES, delay: float = _RETRY_DELAY_SECONDS, **kwargs):
+    for attempt in range(max_retries + 1):
+        try:
+            return fn(*args, **kwargs)
+        except psycopg.OperationalError:
+            if attempt >= max_retries:
+                raise
+            logger.warning(
+                "Transient DB error in memory operation (attempt %d/%d), retrying...",
+                attempt + 1,
+                max_retries + 1,
+            )
+            time.sleep(delay)
+
 
 # Convert async/sync SQLAlchemy direct Neon URL to raw psycopg format
 def get_psycopg_conn_string() -> str:
@@ -3505,10 +4116,11 @@ def get_psycopg_conn_string() -> str:
     conn_str = conn_str.replace("postgresql://", "postgres://")
     return conn_str
 
+
 def build_langgraph_pool() -> ConnectionPool:
     conn_str = get_psycopg_conn_string()
     logger.info("Building resilient psycopg ConnectionPool for Neon DB")
-    
+
     return ConnectionPool(
         conninfo=conn_str,
         min_size=1,
@@ -3628,6 +4240,21 @@ from pathlib import Path
 from app.core.llm import llm
 from app.core.rag.corrective_rag import corrective_retrieve
 from app.eval.test_set import TEST_CASES
+
+
+def response_mentions_known_patient_profile(response: str, patient_profile: dict) -> bool:
+    """Cheap adherence guard: the model should mention at least one known
+    patient fact when a patient profile was provided in context."""
+    if not patient_profile:
+        return True
+
+    text = (response or "").lower()
+    for key, value in patient_profile.items():
+        if value and value.lower() in text:
+            return True
+        if key.lower() in text and value and any(part.lower() in text for part in str(value).split()[:3]):
+            return True
+    return False
 
 
 def run_finetuned_only(query: str) -> dict:
@@ -4875,6 +5502,7 @@ def _build_initial_state(req: AgentRequest, ocr_text: str = "") -> dict:
         "retrieval_decision": "",
         "retrieved_docs": [],
         "saved_memory": False,
+        "remembered_context": "",
         "tool_results": "",
         "messages": [],
     }
@@ -5515,6 +6143,235 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+```
+
+---
+
+## File: `app\tests\test_remember_node.py`
+
+```python
+# app/tests/test_remember_node.py
+"""Unit tests for the Remember node.
+
+Tests the Remember node's ability to extract new memories, deduplicate against
+existing ones, and write only genuinely new items to the store.
+"""
+import pytest
+from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+
+from app.agent.nodes.remember_node import remember_node
+from app.agent.state import AgentState
+from app.agent.memory_schema import MemoryDecision, MemoryItem
+
+
+@pytest.fixture
+def sample_state_with_memory():
+    """Factory for ``AgentState`` dicts including remembered_context."""
+
+    def _make(**kwargs):
+        base = {
+            "patient_id": "test-patient-01",
+            "ocr_context": "",
+            "tool_results": "",
+            "messages": [],
+            "answer": "",
+            "final_response": "",
+            "raw_input": "What is diabetes?",
+            "detected_lang": "en",
+            "needs_rag": False,
+            "retrieval_decision": "",
+            "retrieved_docs": [],
+            "saved_memory": False,
+            "remembered_context": "",
+        }
+        base.update(kwargs)
+        return base
+
+    return _make
+
+
+@pytest.mark.unit
+def test_remember_node_writes_new_fact(fake_store, sample_state_with_memory):
+    """First message about a new symptom → store.put called once, saved_memory=True."""
+    with patch("app.agent.nodes.remember_node.store", fake_store):
+        with patch("app.agent.nodes.remember_node._memory_llm") as mock_llm:
+            # Mock the LLM to return a new memory
+            mock_llm.invoke.return_value = MemoryDecision(
+                should_write=True,
+                memories=[
+                    MemoryItem(text="Patient has a persistent headache", is_new=True),
+                ],
+            )
+
+            state = sample_state_with_memory(raw_input="I have had a headache for 3 days")
+            result = remember_node(state)
+
+            # Verify the node called the LLM
+            assert mock_llm.invoke.called
+
+            # Verify the store was written to
+            stored = fake_store.get(("patient_memories", "test-patient-01"), "")
+            # Note: actual key is UUID, so we check _data directly
+            assert len(fake_store._data.get(("patient_memories", "test-patient-01"), {})) == 1
+
+            # Verify the result has saved_memory=True
+            assert result["saved_memory"] is True
+
+            # Verify remembered_context includes the new fact
+            assert "Patient has a persistent headache" in result["remembered_context"]
+
+
+@pytest.mark.unit
+def test_remember_node_skips_duplicate(fake_store, sample_state_with_memory):
+    """Message restating an existing fact → no store.put call, saved_memory=False."""
+    # Pre-populate the store with an existing memory
+    fake_store.put(
+        ("patient_memories", "test-patient-01"),
+        "existing-1",
+        {"data": "Patient has diabetes"},
+    )
+
+    with patch("app.agent.nodes.remember_node.store", fake_store):
+        with patch("app.agent.nodes.remember_node._memory_llm") as mock_llm:
+            # Mock the LLM to return a duplicate (is_new=False)
+            mock_llm.invoke.return_value = MemoryDecision(
+                should_write=True,
+                memories=[
+                    MemoryItem(text="Patient has diabetes", is_new=False),
+                ],
+            )
+
+            state = sample_state_with_memory(raw_input="Yes, I have diabetes")
+            result = remember_node(state)
+
+            # Verify the node called the LLM
+            assert mock_llm.invoke.called
+
+            # Verify no new store entries were added beyond the existing one
+            assert len(fake_store._data.get(("patient_memories", "test-patient-01"), {})) == 1
+
+            # Verify saved_memory=False (no new memories written)
+            assert result["saved_memory"] is False
+
+            # Verify remembered_context includes the existing fact
+            assert "Patient has diabetes" in result["remembered_context"]
+
+
+@pytest.mark.unit
+def test_remember_node_handles_empty_input(fake_store, sample_state_with_memory):
+    """Empty raw_input → returns existing context unchanged, no LLM call."""
+    # Pre-populate the store with an existing memory
+    fake_store.put(
+        ("patient_memories", "test-patient-01"),
+        "existing-1",
+        {"data": "Patient is 28 years old"},
+    )
+
+    with patch("app.agent.nodes.remember_node.store", fake_store):
+        with patch("app.agent.nodes.remember_node._memory_llm") as mock_llm:
+            state = sample_state_with_memory(raw_input="")
+            result = remember_node(state)
+
+            # Verify the LLM was NOT called
+            assert not mock_llm.invoke.called
+
+            # Verify saved_memory=False
+            assert result["saved_memory"] is False
+
+            # Verify remembered_context has the existing fact
+            assert "Patient is 28 years old" in result["remembered_context"]
+
+
+@pytest.mark.unit
+def test_remember_node_fails_open_on_llm_error(fake_store, sample_state_with_memory):
+    """Mock LLM error → node returns existing context, doesn't propagate the exception."""
+    # Pre-populate the store with an existing memory
+    fake_store.put(
+        ("patient_memories", "test-patient-01"),
+        "existing-1",
+        {"data": "Patient has hypertension"},
+    )
+
+    with patch("app.agent.nodes.remember_node.store", fake_store):
+        with patch("app.agent.nodes.remember_node._memory_llm") as mock_llm:
+            # Mock the LLM to raise an exception
+            mock_llm.invoke.side_effect = RuntimeError("LLM service unavailable")
+
+            state = sample_state_with_memory(raw_input="I feel dizzy")
+            result = remember_node(state)
+
+            # Verify the exception was NOT propagated — the node failed open
+            # and returned gracefully
+
+            # Verify saved_memory=False (no memories written due to error)
+            assert result["saved_memory"] is False
+
+            # Verify remembered_context has the existing fact (fell back to DB)
+            assert "Patient has hypertension" in result["remembered_context"]
+
+
+@pytest.mark.unit
+def test_remember_node_fails_open_on_store_unavailable(sample_state_with_memory):
+    """store=None → returns empty context, no crash."""
+    with patch("app.agent.nodes.remember_node.store", None):
+        state = sample_state_with_memory(raw_input="I have a fever")
+        result = remember_node(state)
+
+        # Verify the node didn't crash
+        # Verify saved_memory=False
+        assert result["saved_memory"] is False
+
+        # Verify remembered_context is empty
+        assert result["remembered_context"] == ""
+
+```
+
+---
+
+## File: `app\tests\test_tools.py`
+
+```python
+@pytest.mark.unit
+def test_save_patient_profile_accepts_arbitrary_field(fake_store):
+    result = save_patient_profile.invoke({
+        "patient_id": "p1", "field": "occupation", "value": "Software Engineer",
+        "source_message": "I work as a software engineer",
+    })
+    assert "occupation = Software Engineer" in result
+    saved = fake_store.get(("patient_profile", "p1"), "occupation")
+    assert saved.value["value"] == "Software Engineer"
+
+
+@pytest.mark.unit
+def test_save_patient_profile_normalizes_key_but_keeps_label(fake_store):
+    save_patient_profile.invoke({
+        "patient_id": "p1", "field": "Emergency Contact", "value": "Ali (brother)",
+        "source_message": "my emergency contact is my brother Ali",
+    })
+    saved = fake_store.get(("patient_profile", "p1"), "emergency_contact")
+    assert saved.value["label"] == "Emergency Contact"
+    assert saved.value["value"] == "Ali (brother)"
+
+
+@pytest.mark.unit
+def test_fetch_patient_profile_returns_all_saved_fields(fake_store):
+    fake_store.put(("patient_profile", "p1"), "name", {"value": "Ayan"})
+    fake_store.put(("patient_profile", "p1"), "occupation", {"value": "Engineer"})
+    fake_store.put(("patient_profile", "p1"), "city", {"value": "Lahore"})
+    result = fetch_patient_profile.invoke({"patient_id": "p1"})
+    assert "name: Ayan" in result
+    assert "occupation: Engineer" in result
+    assert "city: Lahore" in result
+
+
+@pytest.mark.unit
+def test_save_patient_profile_rejects_empty_value(fake_store):
+    result = save_patient_profile.invoke({
+        "patient_id": "p1", "field": "name", "value": "  ",
+        "source_message": "x",
+    })
+    assert "required" in result.lower()
 ```
 
 ---
@@ -10722,7 +11579,14 @@ export function useConversations() {
 
 ```javascript
 import { API_BASE } from './config';
-import { getAccessToken, clearSession } from './session';
+import { 
+  getAccessToken, 
+  getRefreshToken,
+  clearSession,
+  setSession,
+  isTokenExpiringSoon,
+  recordTokenIssuedTime,
+} from './session';
 
 export class ApiError extends Error {
   constructor(message, status) {
@@ -10731,9 +11595,83 @@ export class ApiError extends Error {
   }
 }
 
-async function request(path, options = {}) {
+/**
+ * Exchange the refresh token for a new access + refresh pair.
+ * Called when access token expires or is about to expire.
+ * Implements token rotation: the old refresh token is revoked server-side.
+ */
+async function refreshAccessToken() {
+  const refreshToken = getRefreshToken();
+  if (!refreshToken) {
+    throw new ApiError('No refresh token available', 401);
+  }
+
+  const url = `${API_BASE}/auth/refresh`;
+  
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    });
+
+    if (!res.ok) {
+      // Refresh failed — token is invalid, expired, or revoked
+      clearSession();
+      window.dispatchEvent(new CustomEvent('auth:unauthorized'));
+      throw new ApiError('Token refresh failed', res.status);
+    }
+
+    const data = await res.json();
+    // Store the new access + refresh tokens
+    setSession({
+      access_token: data.access_token,
+      refresh_token: data.refresh_token,
+    });
+    
+    console.info('Token refreshed successfully');
+    return data.access_token;
+  } catch (err) {
+    clearSession();
+    window.dispatchEvent(new CustomEvent('auth:unauthorized'));
+    throw err;
+  }
+}
+
+/**
+ * Proactively refresh token if it's expiring soon.
+ * Call this before making important requests (e.g., agent invoke).
+ * Returns true if refresh was needed and succeeded, false otherwise.
+ */
+export async function proactiveRefresh() {
+  if (!isTokenExpiringSoon()) {
+    return false; // Token is still fresh
+  }
+
+  try {
+    await refreshAccessToken();
+    return true; // Refresh succeeded
+  } catch (err) {
+    console.error('Proactive refresh failed:', err);
+    return false; // Refresh failed, will retry on 401
+  }
+}
+
+async function request(path, options = {}, retryCount = 0) {
   const token = getAccessToken();
   const url = `${API_BASE}${path}`;
+
+  // Proactively refresh if token is expiring soon (before making the request)
+  // This prevents 401 errors mid-request
+  if (isTokenExpiringSoon()) {
+    try {
+      await refreshAccessToken();
+    } catch (err) {
+      console.warn('Proactive refresh failed, will try again on 401:', err);
+    }
+  }
 
   const headers = {
     'Content-Type': 'application/json',
@@ -10743,7 +11681,21 @@ async function request(path, options = {}) {
 
   const res = await fetch(url, { ...options, headers });
 
-  // Backend has NO /auth/refresh in Phase 5 — just logout on 401
+  // Handle 401 — try to refresh and retry once
+  if (res.status === 401 && retryCount === 0) {
+    try {
+      await refreshAccessToken();
+      // Retry the original request with the new token
+      return request(path, options, retryCount + 1);
+    } catch (err) {
+      // Refresh failed — clear session and fail
+      clearSession();
+      window.dispatchEvent(new CustomEvent('auth:unauthorized'));
+      throw new ApiError('Unauthorized', 401);
+    }
+  }
+
+  // Final 401 (already retried) — give up
   if (res.status === 401) {
     clearSession();
     window.dispatchEvent(new CustomEvent('auth:unauthorized'));
@@ -10878,6 +11830,10 @@ export async function fileToImageData(file, opts = {}) {
 // src/utils/session.js
 
 const SESSION_KEY = 'health_companion_session';
+const TOKEN_EXPIRY_KEY = 'health_companion_token_expiry';
+
+// Default token expiry time (in minutes) — should match backend ACCESS_TOKEN_EXPIRE_MINUTES
+const ACCESS_TOKEN_EXPIRE_MINUTES = 60;
 
 export const getSession = () => {
   try {
@@ -10890,14 +11846,58 @@ export const getSession = () => {
 
 export const setSession = (session) => {
   localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+  // When tokens are issued, record the current time so we can calculate expiry
+  recordTokenIssuedTime();
 };
 
 export const clearSession = () => {
   localStorage.removeItem(SESSION_KEY);
+  localStorage.removeItem(TOKEN_EXPIRY_KEY);
 };
 
 export const getAccessToken = () => getSession()?.access_token ?? null;
 export const getRefreshToken = () => getSession()?.refresh_token ?? null;
+
+/**
+ * Record the time tokens were issued (now).
+ * Used for proactive refresh — we calculate expiry as issuedTime + ACCESS_TOKEN_EXPIRE_MINUTES.
+ */
+export const recordTokenIssuedTime = () => {
+  localStorage.setItem(TOKEN_EXPIRY_KEY, JSON.stringify({
+    issued_at: Date.now(),
+    expires_in_ms: ACCESS_TOKEN_EXPIRE_MINUTES * 60 * 1000,
+  }));
+};
+
+/**
+ * Get the expiry time for the current access token (milliseconds since epoch).
+ * Returns null if tokens haven't been issued yet.
+ */
+export const getTokenExpiryTime = () => {
+  try {
+    const data = localStorage.getItem(TOKEN_EXPIRY_KEY);
+    if (!data) return null;
+    const parsed = JSON.parse(data);
+    return parsed.issued_at + parsed.expires_in_ms;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Check if the access token is expiring soon (within threshold minutes).
+ * Returns true if token is within `thresholdMinutes` of expiry.
+ * @param thresholdMinutes - How many minutes before expiry to consider it "soon" (default 2)
+ */
+export const isTokenExpiringSoon = (thresholdMinutes = 2) => {
+  const expiryTime = getTokenExpiryTime();
+  if (!expiryTime) return false;
+  
+  const now = Date.now();
+  const expiryThreshold = thresholdMinutes * 60 * 1000;
+  
+  return expiryTime - now < expiryThreshold;
+};
 ```
 
 ---
@@ -11257,6 +12257,13 @@ def fake_store():
         def __init__(self):
             self._data: dict[tuple, dict[str, dict]] = {}
 
+        def get(self, namespace, key):
+            ns = tuple(namespace)
+            value = self._data.get(ns, {}).get(key)
+            if value is None:
+                return None
+            return SimpleNamespace(key=key, value=value)
+
         def search(self, namespace, query="", limit=5):
             ns = tuple(namespace)
             items = [
@@ -11290,6 +12297,7 @@ def sample_state():
             "retrieval_decision": "",
             "retrieved_docs": [],
             "saved_memory": False,
+            "remembered_context": "",
         }
         base.update(kwargs)
         return base
@@ -11430,6 +12438,39 @@ def test_biomistral_no_context_uses_placeholders(fake_llm, sample_state):
     system_text = captured["system"].content
     assert "No OCR text attached." in system_text
     assert "No external context retrieved." in system_text
+
+
+@pytest.mark.unit
+def test_biomistral_places_patient_profile_next_to_question(fake_llm, sample_state):
+    """Patient-specific facts should be injected immediately before the
+    user's question so the local model sees them as the most salient context."""
+    fake_llm.response_text = "ok"
+    fake_llm.tool_calls = None
+    captured = {}
+    orig = fake_llm.invoke
+
+    def _capture(messages):
+        captured["system"] = next(
+            (m for m in messages if isinstance(m, SystemMessage)), None
+        )
+        captured["human"] = next(
+            (m for m in messages if isinstance(m, HumanMessage)), None
+        )
+        return orig(messages)
+
+    fake_llm.invoke = _capture
+
+    state = sample_state(
+        raw_input="what do you know about me?",
+        tool_results="--- Context from tool [fetch_patient_profile] ---\nKnown patient profile:\n- education: Class 11\n- name: Ayan",
+    )
+    biomistral_node(state)
+
+    human_text = captured["human"].content
+    assert "Patient profile (use this to answer)" in human_text
+    assert "education: Class 11" in human_text
+    assert "name: Ayan" in human_text
+    assert human_text.index("Patient profile (use this to answer)") < human_text.index("User question: what do you know about me?")
 
 ```
 
@@ -11723,29 +12764,137 @@ def test_router_empty_history_appends_input(fake_llm, sample_state):
 
 ```python
 """Unit tests for app/agent/tools.py — all four LangGraph tools."""
+from types import SimpleNamespace
+
+import psycopg
 import pytest
 
 from app.agent.tools import (
     TOOLS,
     fetch_patient_facts,
-    retrieve_medical_knowledge,
+    fetch_patient_profile,
     save_emotional_state,
     save_patient_fact,
+    save_patient_profile,
 )
 
 
 # ── TOOLS list ───────────────────────────────────────────────────────────────
 
 @pytest.mark.unit
-def test_tools_list_has_four():
-    assert len(TOOLS) == 4
+def test_tools_list_has_expected_tools():
     names = {t.name for t in TOOLS}
     assert names == {
         "fetch_patient_facts",
+        "fetch_patient_profile",
+        "save_patient_profile",
         "retrieve_medical_knowledge",
         "save_patient_fact",
         "save_emotional_state",
+        "search_web_medical",
     }
+
+
+# ── profile retries ─────────────────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_save_patient_profile_retries_transient_store_error(monkeypatch, fake_store):
+    class FlakyStore(fake_store.__class__):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        def put(self, namespace, key, value):
+            self.calls += 1
+            if self.calls == 1:
+                raise psycopg.OperationalError("SSL connection has been closed unexpectedly")
+            return super().put(namespace, key, value)
+
+    flaky_store = FlakyStore()
+    monkeypatch.setattr("app.agent.tools.store", flaky_store)
+
+    result = save_patient_profile.invoke({
+        "patient_id": "p1",
+        "field": "name",
+        "value": "Ayan",
+        "source_message": "My name is Ayan",
+    })
+
+    assert "Saved to patient profile: name = Ayan" in result
+    assert flaky_store.calls == 2
+    assert flaky_store.get(("patient_profile", "p1"), "name").value["value"] == "Ayan"
+
+
+@pytest.mark.unit
+def test_fetch_patient_profile_retries_transient_store_error(monkeypatch):
+    class FlakyStore:
+        def __init__(self):
+            self.calls = 0
+
+        def search(self, namespace, query="", limit=5):
+            self.calls += 1
+            if self.calls == 1:
+                raise psycopg.OperationalError("SSL connection has been closed unexpectedly")
+            return [
+                SimpleNamespace(
+                    key="name",
+                    value={"value": "Ayan"},
+                )
+            ]
+
+    flaky_store = FlakyStore()
+    monkeypatch.setattr("app.agent.tools.store", flaky_store)
+
+    result = fetch_patient_profile.invoke({"patient_id": "p1"})
+    assert "Known patient profile" in result
+    assert "name: Ayan" in result
+    assert flaky_store.calls == 2
+
+
+@pytest.mark.unit
+def test_save_patient_profile_surfaces_unconfirmed_write(monkeypatch, caplog):
+    class NeverConfirmedStore:
+        def put(self, namespace, key, value):
+            return None
+
+        def get(self, namespace, key):
+            return None
+
+    monkeypatch.setattr("app.agent.tools.store", NeverConfirmedStore())
+
+    with caplog.at_level("ERROR"):
+        result = save_patient_profile.invoke({
+            "patient_id": "p1",
+            "field": "name",
+            "value": "Ayan",
+            "source_message": "My name is Ayan",
+        })
+
+    assert result.startswith("MEMORY_ERROR:")
+    assert "MEMORY_SAVE_UNCONFIRMED" in caplog.text
+
+
+@pytest.mark.unit
+def test_fetch_patient_facts_retries_transient_store_error(monkeypatch):
+    class FlakyStore:
+        def __init__(self):
+            self.calls = 0
+
+        def search(self, namespace, query="", limit=5):
+            self.calls += 1
+            if self.calls == 1:
+                raise psycopg.OperationalError("SSL connection has been closed unexpectedly")
+            return [
+                SimpleNamespace(value={"symptom": "fever", "onset": "3 days ago", "status": "ongoing"})
+            ]
+
+    flaky_store = FlakyStore()
+    monkeypatch.setattr("app.agent.tools.store", flaky_store)
+
+    result = fetch_patient_facts.invoke({"patient_id": "p1", "query": "fever"})
+    assert "Known patient history" in result
+    assert "fever" in result
+    assert flaky_store.calls == 2
 
 
 # ── fetch_patient_facts ─────────────────────────────────────────────────────
@@ -12628,6 +13777,7 @@ def test_noop_when_already_postgresql(monkeypatch):
 """Unit tests for app/services/agent_service.py — run_agent + _build_initial_state."""
 import pytest
 
+from app.core.llm import validate_llm_connection
 from app.schemas.agent import AgentRequest
 from app.services.agent_service import _build_initial_state, run_agent
 
@@ -12797,6 +13947,19 @@ async def test_run_agent_uses_thread_id_when_provided(monkeypatch):
     await run_agent(req)
 
     assert captured_config["configurable"]["thread_id"] == "conv-uuid-123"
+
+
+@pytest.mark.unit
+def test_validate_llm_connection_reports_unreachable_backend(monkeypatch):
+    import httpx
+
+    def _raise_connect_error(*args, **kwargs):
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr("app.core.llm.httpx.get", _raise_connect_error)
+
+    with pytest.raises(RuntimeError, match="LLM backend|LLM_BASE_URL|llama-server"):
+        validate_llm_connection()
 
 ```
 

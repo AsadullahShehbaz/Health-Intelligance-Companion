@@ -1,13 +1,16 @@
 # app/agent/graph.py
-"""Decoupled router-node pipeline.
+"""3-stage Remember → RAG Router → Chat pipeline.
 
-    Router (Groq, tool-calling)  ──tools?──▶  Tools  ──▶  BioMistral (local GGUF)  ──▶  END
-                        │
-                        └───── no tools ─────────────────▶  BioMistral  ──▶  END
+    Remember (gpt-oss-120b)
+        │ (remembered_context)
+        ▼
+    RAG Router (Groq, tool-calling)  ──tools?──▶  Tools  ──▶  Chat (local GGUF)  ──▶  END
+                            │
+                            └───── no tools ─────────────────▶  Chat  ──▶  END
 
-The router decides whether tools are needed and emits tool_calls; it never
-writes the final answer. Tool results are flattened into plain text and
-handed to the BioMistral node, which does a single clean inference turn.
+The Remember node extracts and deduplicates patient memories each turn.
+The RAG Router decides whether RAG tools are needed and emits tool_calls.
+The Chat node produces the final empathetic answer from the local GGUF model.
 """
 import re
 import time
@@ -16,8 +19,9 @@ from langchain_core.messages import AIMessage
 from langgraph.graph import END, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 
+from app.agent.nodes.remember_node import remember_node
 from app.agent.nodes.biomistral_node import biomistral_node
-from app.agent.nodes.router_node import router_node
+from app.agent.nodes.router_node import rag_router_node
 from app.agent.state import AgentState
 from app.agent.tools import TOOLS
 from app.db.lifespan import checkpointer, store
@@ -27,18 +31,19 @@ logger = get_logger(__name__)
 
 _tool_node = ToolNode(TOOLS)
 
+# Alias for clarity: the biomistral node is referred to as "chat" in the graph
+chat_node = biomistral_node
+
 
 def _extract_tool_metadata(tool_messages: list) -> dict:
-    """Flatten this turn's ToolMessages into plain text for BioMistral and
+    """Flatten this turn's ToolMessages into plain text for Chat and
     pull out the per-turn metadata flags the sidebar / response schema need.
 
     Only the *new* tool messages (returned by the ToolNode this turn) are
-    scanned, so needs_rag / saved_memory reflect the current turn, not the
-    accumulated history.
+    scanned, so needs_rag reflects the current turn, not the accumulated history.
     """
     extracted: list[str] = []
     rag_used = False
-    saved_memory = False
     sources: list[str] = []
 
     for msg in tool_messages:
@@ -55,21 +60,17 @@ def _extract_tool_metadata(tool_messages: list) -> dict:
                 if match:
                     sources.append(match.group(1))
 
-        if name in ("save_patient_fact", "save_emotional_state"):
-            saved_memory = True
-
     return {
         "tool_results": "\n".join(extracted),
         "needs_rag": rag_used,
         "retrieval_decision": "retrieved" if rag_used else "",
         "retrieved_docs": [{"source": s} for s in sources[:3]],
-        "saved_memory": saved_memory,
     }
 
 
 def _run_tools(state: AgentState) -> dict:
-    """Execute the router's tool calls, then fold the results into the
-    plain-text context + metadata BioMistral consumes."""
+    """Execute the RAG router's tool calls, then fold the results into the
+    plain-text context the Chat node consumes."""
     messages = state.get("messages", [])
 
     if messages:
@@ -94,19 +95,19 @@ def _run_tools(state: AgentState) -> dict:
     return result
 
 
-def _route_after_router(state: AgentState) -> str:
-    """tools_condition wrapper: route to 'tools' when the router emitted
-    tool_calls, otherwise straight to the BioMistral reasoning node.
+def _route_after_rag_router(state: AgentState) -> str:
+    """tools_condition wrapper: route to 'tools' when the RAG router emitted
+    tool_calls, otherwise straight to the Chat node.
 
     tools_condition raises on an empty message list; the router always
     persists at least the user's HumanMessage before this runs, but we guard
     the empty case so a unit call can't crash the graph.
     """
     if not state.get("messages"):
-        route = "biomistral"
+        route = "chat"
     else:
-        route = "tools" if tools_condition(state) == "tools" else "biomistral"
-    logger.info("↪ Router routing → %s", route)
+        route = "tools" if tools_condition(state) == "tools" else "chat"
+    logger.info("↪ RAG Router routing → %s", route)
     return route
 
 
@@ -114,33 +115,37 @@ def build_health_agent():
     graph = StateGraph(AgentState)
 
     # 1. Add nodes
-    graph.add_node("router", router_node)
+    graph.add_node("remember", remember_node)
+    graph.add_node("rag_router", rag_router_node)
     graph.add_node("tools", _run_tools)
-    graph.add_node("biomistral", biomistral_node)
+    graph.add_node("chat", chat_node)
 
     # 2. Entry point
-    graph.set_entry_point("router")
+    graph.set_entry_point("remember")
 
-    # 3. Conditional routing from the router
+    # 3. Remember feeds into RAG Router
+    graph.add_edge("remember", "rag_router")
+
+    # 4. Conditional routing from the RAG Router
     graph.add_conditional_edges(
-        "router",
-        _route_after_router,
+        "rag_router",
+        _route_after_rag_router,
         {
-            "tools": "tools",        # router outputted tool_calls
-            "biomistral": "biomistral",  # no tools → straight to reasoning
+            "tools": "tools",        # rag_router outputted tool_calls
+            "chat": "chat",          # no tools → straight to chat
         },
     )
 
-    # 4. Tools feed their context into BioMistral
-    graph.add_edge("tools", "biomistral")
+    # 5. Tools feed their context into Chat
+    graph.add_edge("tools", "chat")
 
-    # 5. BioMistral ends the turn
-    graph.add_edge("biomistral", END)
+    # 6. Chat ends the turn
+    graph.add_edge("chat", END)
 
     compiled = graph.compile(
         checkpointer=checkpointer,
         store=store,
     )
 
-    logger.info("✓ Health agent graph compiled (router → tools? → biomistral → END)")
+    logger.info("✓ Health agent graph compiled (remember → rag_router → tools? → chat → END)")
     return compiled

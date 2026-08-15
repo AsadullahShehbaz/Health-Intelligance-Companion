@@ -1,8 +1,0 @@
-{
-  "env":{
-    "ANTHROPIC_BASE_URL":"https://openrouter.ai/api/v1",
-    "ANTHROPIC_AUTH_TOKEN":"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",
-    "ANTHROPIC_MODEL":"poolside/laguna-s-2.1:free"
-  }
-}
-

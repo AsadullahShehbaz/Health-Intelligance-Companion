@@ -1,9 +1,36 @@
 # File: app/db/pool.py
+import time
+
+import psycopg
 from psycopg_pool import ConnectionPool
+
 from app.config import settings
 from app.utils.logging_config import get_logger
 
 logger = get_logger(__name__)
+
+# Neon autosuspends an idle compute and kills its connections. The pool
+# reconnects on checkout, but the *first* query on a fresh connection can
+# still abort while the compute is waking — add the same single retry used
+# elsewhere for transient DB blips.
+_MAX_DB_RETRIES = 1
+_RETRY_DELAY_SECONDS = 0.5
+
+
+def run_with_retry(fn, *args, max_retries: int = _MAX_DB_RETRIES, delay: float = _RETRY_DELAY_SECONDS, **kwargs):
+    for attempt in range(max_retries + 1):
+        try:
+            return fn(*args, **kwargs)
+        except psycopg.OperationalError:
+            if attempt >= max_retries:
+                raise
+            logger.warning(
+                "Transient DB error in memory operation (attempt %d/%d), retrying...",
+                attempt + 1,
+                max_retries + 1,
+            )
+            time.sleep(delay)
+
 
 # Convert async/sync SQLAlchemy direct Neon URL to raw psycopg format
 def get_psycopg_conn_string() -> str:
@@ -13,10 +40,11 @@ def get_psycopg_conn_string() -> str:
     conn_str = conn_str.replace("postgresql://", "postgres://")
     return conn_str
 
+
 def build_langgraph_pool() -> ConnectionPool:
     conn_str = get_psycopg_conn_string()
     logger.info("Building resilient psycopg ConnectionPool for Neon DB")
-    
+
     return ConnectionPool(
         conninfo=conn_str,
         min_size=1,

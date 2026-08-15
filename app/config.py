@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     HF_TOKEN: str
     SECRET_KEY: str
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 15          # short-lived access token
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60          # short-lived access token (was 15, too short for slow local inference)
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7             # longer-lived refresh token
     RESET_TOKEN_EXPIRE_HOURS: int = 1              # password-reset token TTL
     VERIFY_TOKEN_EXPIRE_HOURS: int = 48            # email-verify token TTL
@@ -33,7 +33,7 @@ class Settings(BaseSettings):
 
     SERP_API_KEY : str
     GROQ_API_KEY : str
-    GROQ_MODEL: str = "llama-3.3-70b-versatile"  # fast & reliable free tool-calling model
+    GROQ_MODEL: str = "openai/gpt-oss-120b"  # fast & reliable free tool-calling model
     model_config = ConfigDict(env_file=".env", extra="ignore")
 
 
