@@ -1,119 +1,127 @@
-# app/core/rag/ocr.py
-import base64
-import io
-import cv2
-import numpy as np
-from PIL import Image, ImageOps
-import pytesseract
-
+import os
+import re
+from typing import Tuple
+from langchain_core.messages import HumanMessage
+from langchain_groq import ChatGroq
+from app.config import settings
 from app.utils.logging_config import get_logger
 
 logger = get_logger(__name__)
 
+# Initialize ChatGroq Vision Model lazily / globally
+_groq_vision_llm = None
 
-def preprocess_image(pil_image: Image.Image) -> np.ndarray:
+
+def get_groq_vision_client() -> ChatGroq:
+    """Lazy initialization for ChatGroq Vision Client."""
+    global _groq_vision_llm
+    if _groq_vision_llm is None:
+        api_key = settings.GROQ_API_KEY
+        if not api_key:
+            logger.error("GROQ_API_KEY is missing from environment variables!")
+            raise ValueError("GROQ_API_KEY is not configured.")
+
+        _groq_vision_llm = ChatGroq(
+            model_name="qwen/qwen3.6-27b",
+            temperature=0.1,  # Low temperature for factual document extraction
+            max_tokens=1024,
+            groq_api_key=api_key,
+        )
+    return _groq_vision_llm
+
+
+def parse_base64_payload(raw_b64_string: str) -> Tuple[str, str]:
     """
-    Preprocess image for optimal Tesseract OCR performance on lab reports and medical records:
-    1. Fix orientation EXIF tag.
-    2. Upscale low-DPI images.
-    3. Grayscale conversion.
-    4. Contrast enhancement using CLAHE.
-    5. Adaptive thresholding and noise filtering.
+    Parses Base64 string and preserves MIME type if sent from frontend as a Data URI scheme.
+
+    Examples:
+        Input: "data:image/png;base64,iVBORw0KGgo..."
+        Output: ("image/png", "iVBORw0KGgo...")
+
+        Input: "/9j/4AAQSkZJRg..."
+        Output: ("image/jpeg", "/9j/4AAQSkZJRg...")
     """
-    # 1. Correct EXIF orientation (e.g. phone photos taken sideways)
-    try:
-        pil_image = ImageOps.exif_transpose(pil_image)
-    except Exception:
-        pass
+    # Regex pattern to capture data URI scheme like data:image/png;base64,
+    data_uri_pattern = r"^data:(image\/[a-zA-Z0-9\+\-\.]+);base64,(.+)$"
+    match = re.match(data_uri_pattern, raw_b64_string.strip())
 
-    # Convert to RGB if palette/RGBA
-    if pil_image.mode not in ("RGB", "L"):
-        pil_image = pil_image.convert("RGB")
+    if match:
+        mime_type = match.group(1)
+        clean_b64 = match.group(2)
+        logger.info("Preserved MIME type '%s' from Data URI header", mime_type)
+        return mime_type, clean_b64
 
-    # 2. Check resolution & upscale low DPI/small images
-    width, height = pil_image.size
-    min_dim = min(width, height)
-    if min_dim < 1000:
-        scale_factor = 2.0 if min_dim > 500 else 3.0
-        new_width = int(width * scale_factor)
-        new_height = int(height * scale_factor)
-        pil_image = pil_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
-        logger.info("Upscaled low-res image from (%d, %d) to (%d, %d)", width, height, new_width, new_height)
-
-    # Convert PIL Image to OpenCV format (BGR / Grayscale)
-    img_np = np.array(pil_image)
-    if len(img_np.shape) == 3 and img_np.shape[2] == 3:
-        gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
-    elif len(img_np.shape) == 3 and img_np.shape[2] == 4:
-        gray = cv2.cvtColor(img_np, cv2.COLOR_RGBA2GRAY)
-    else:
-        gray = img_np
-
-    # 3. Apply CLAHE (Contrast Limited Adaptive Histogram Equalization)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    enhanced = clahe.apply(gray)
-
-    # 4. Bilateral filter to smooth noise while preserving text edges
-    filtered = cv2.bilateralFilter(enhanced, d=9, sigmaColor=75, sigmaSpace=75)
-
-    # 5. Otsu Binarization / Thresholding
-    _, thresh = cv2.threshold(filtered, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-    return thresh
-
-
-def run_tesseract_with_fallbacks(cv_image: np.ndarray, raw_pil_image: Image.Image) -> str:
-    """
-    Attempts OCR with multiple PSM configurations to handle various medical report layouts.
-    """
-    # PSM 3: Fully automatic page segmentation (default)
-    # PSM 6: Assume a single uniform block of text (great for tabular lab results)
-    # PSM 11: Sparse text (find as much text as possible in scattered locations)
-    psm_configs = ["--psm 3", "--psm 6", "--psm 11"]
-
-    # First attempt on preprocessed binary image
-    for config in psm_configs:
-        text = pytesseract.image_to_string(cv_image, config=config).strip()
-        if len(text) > 10:
-            logger.info("OCR successful on preprocessed image with config='%s' | chars=%d", config, len(text))
-            return text
-
-    # Fallback attempt on raw PIL image if thresholding removed faint text/color fonts
-    logger.info("Preprocessed OCR yielded low characters. Running fallback on raw image...")
-    for config in psm_configs:
-        text = pytesseract.image_to_string(raw_pil_image, config=config).strip()
-        if len(text) > 10:
-            logger.info("OCR successful on raw image fallback with config='%s' | chars=%d", config, len(text))
-            return text
-
-    return ""
+    # If header is missing, fallback to default JPEG
+    logger.info("No Data URI scheme found. Defaulting MIME type to 'image/jpeg'")
+    return "image/jpeg", raw_b64_string.strip()
 
 
 def extract_text_from_base64(image_b64: str) -> str:
+    """
+    Extracts structured text from medical documents, lab reports, and prescriptions
+    using Groq LLaMA 3.2 Vision via LangChain.
+    """
     if not image_b64:
         logger.info("OCR skipped — empty image_base64")
         return ""
 
-    logger.info("▶ OCR extraction started | b64_len=%d", len(image_b64))
+    logger.info("▶ Vision extraction started via Groq | raw_len=%d", len(image_b64))
 
     try:
-        # Sanitize Base64 string if data URL prefix exists (e.g. "data:image/png;base64,...")
-        if "," in image_b64:
-            image_b64 = image_b64.split(",", 1)[1]
+        # Extract MIME type and clean raw base64 data
+        mime_type, clean_b64 = parse_base64_payload(image_b64)
 
-        image_bytes = base64.b64decode(image_b64)
-        image = Image.open(io.BytesIO(image_bytes))
-        logger.info("Image loaded | size=%s | mode=%s", image.size, image.mode)
+        # Reconstruct the exact Data URI string required by LLM vision specs
+        formatted_data_url = f"data:{mime_type};base64,{clean_b64}"
 
-        # Preprocess the image with OpenCV
-        processed_img = preprocess_image(image)
+        # Get Groq client instance
+        vision_llm = get_groq_vision_client()
 
-        # Extract text using fallback execution pipeline
-        result = run_tesseract_with_fallbacks(processed_img, image)
+        # Construct Multimodal LangChain HumanMessage
+        message = HumanMessage(
+            content=[
+                {
+                    "type": "text",
+                    "text": (
+                        """Analyze this medical image and extract only clinically relevant information.
+                        
+                        Return concise structured text containing:
+                        - Patient details
+                        - Diagnosis
+                        - Symptoms
+                        - Vital signs
+                        - Lab results with values and units
+                        - Medications and dosages
+                        - Doctor instructions
+                        - Important findings
+                        
+                        Do not explain your reasoning.
+                        Do not use <think>.
+                        Do not speculate.
+                        If something is unreadable, write [unclear].
+                        Preserve exact numbers, units, medication names, and dosages."""
+                    ),
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": formatted_data_url
+                    },
+                },
+            ]
+        )
 
-        logger.info("✓ OCR extraction completed | chars=%d", len(result))
-        return result
+        # Invoke model
+        response = vision_llm.invoke([message])
+        extracted_text = response.content.strip()
+
+        logger.info(
+            "✓ Groq Vision extraction completed | chars=%d | mime=%s",
+            len(extracted_text),
+            mime_type,
+        )
+        return extracted_text
 
     except Exception:
-        logger.exception("OCR extraction failed")
-        return ""
+        logger.exception("Groq Vision extraction failed")
+        return ""  

@@ -139,3 +139,57 @@ def test_biomistral_includes_remembered_context(fake_llm, sample_state):
 
     assert captured["system"] is not None
     assert "Ayan" in captured["system"].content
+
+
+@pytest.mark.unit
+def test_biomistral_prompt_has_holistic_reasoning_section(fake_llm, sample_state):
+    """The system prompt should instruct the model to cross-reference across
+    categorized memory sections (symptoms vs medications vs lifestyle)."""
+    fake_llm.response_text = "ok"
+    fake_llm.tool_calls = None
+    captured = _capture_system(fake_llm)
+
+    # Categorized memory block (as produced by Phase 1's _format_existing)
+    categorized_memory = (
+        "IDENTITY: Ayan Ahmed, 11th semester CS student, Lahore\n"
+        "ACTIVE SYMPTOMS: Persistent headache (3 days ago, moderate)\n"
+        "MEDICATIONS: Panadol 500mg twice daily (2 days ago)\n"
+        "LIFESTYLE: Sleeps ~5hrs/night, skips breakfast\n"
+        "EMOTIONAL STATE: Mild anxiety about exams (2 days ago)\n"
+        "RESOLVED HISTORY: Sore throat (resolved, last week)"
+    )
+    state = sample_state(remembered_context=categorized_memory)
+    biomistral_node(state)
+
+    system_text = captured["system"].content
+
+    # The categorized headings should be present
+    assert "IDENTITY:" in system_text
+    assert "ACTIVE SYMPTOMS:" in system_text
+    assert "MEDICATIONS:" in system_text
+
+    # The holistic reasoning instructions should be present
+    assert "HOLISTIC REASONING" in system_text
+    assert "cross-reference" in system_text
+
+
+@pytest.mark.unit
+def test_biomistral_prompt_cross_references_symptoms_and_meds(fake_llm, sample_state):
+    """When patient has both symptoms and medications, the prompt should carry
+    both so the model can reason about conflicts."""
+    fake_llm.response_text = "ok"
+    fake_llm.tool_calls = None
+    captured = _capture_system(fake_llm)
+
+    state = sample_state(
+        remembered_context=(
+            "ACTIVE SYMPTOMS: Fever (2 days ago, mild)\n"
+            "MEDICATIONS: Paracetamol 500mg (1 day ago)"
+        )
+    )
+    biomistral_node(state)
+
+    system_text = captured["system"].content
+    assert "Fever" in system_text
+    assert "Paracetamol" in system_text
+    assert "MEDICATIONS" in system_text
