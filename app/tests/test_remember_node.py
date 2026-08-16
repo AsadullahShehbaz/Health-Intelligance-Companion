@@ -309,3 +309,369 @@ def test_mixed_categories_all_appear(fake_store, sample_state_with_memory):
             assert "MEDICATIONS:" in ctx
             assert "EMOTIONAL STATE:" in ctx
             assert result["saved_memory"] is True
+
+
+# ── Phase 3: OCR ingestion tests ─────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_remember_node_extracts_facts_from_ocr(fake_store, sample_state_with_memory):
+    """OCR'd prescription text → medication facts extracted and persisted."""
+    with patch("app.agent.nodes.remember_node.store", fake_store):
+        with patch("app.agent.nodes.remember_node._memory_llm") as mock_llm:
+            mock_llm.invoke.return_value = MemoryDecision(
+                should_write=True,
+                memories=[
+                    MemoryItem(
+                        text="Prescribed Panadol 500mg twice daily",
+                        category=MemoryCategory.MEDICATION,
+                        status="active",
+                        is_new=True,
+                    ),
+                    MemoryItem(
+                        text="CBC report: hemoglobin 10.5 g/dL (below reference range)",
+                        category=MemoryCategory.LAB_RESULT,
+                        status="active",
+                        is_new=True,
+                    ),
+                ],
+            )
+
+            ocr_text = "Rx: Panadol 500mg BD x 5 days\nLab: Hb 10.5 g/dL (low)"
+            state = sample_state_with_memory(
+                raw_input="Here is my prescription and lab report",
+                ocr_context=ocr_text,
+            )
+            result = remember_node(state)
+
+            # LLM was invoked and OCR facts persisted
+            assert mock_llm.invoke.called
+            assert result["saved_memory"] is True
+
+            # Verify the system prompt included the OCR text
+            system_msg = mock_llm.invoke.call_args[0][0][0]
+            assert "Panadol 500mg" in system_msg.content
+            assert "Hb 10.5" in system_msg.content
+            assert "DOCUMENT TEXT" in system_msg.content
+
+            # Verify persisted facts carry the right categories
+            stored = list(
+                fake_store._data[("patient_memories", "test-patient-01")].values()
+            )
+            assert len(stored) == 2
+            categories = {s["data"]["category"] for s in stored}
+            assert categories == {"medication", "lab_result"}
+
+            # Categories should appear in the formatted context
+            assert "MEDICATIONS:" in result["remembered_context"]
+            assert "LAB RESULTS:" in result["remembered_context"]
+
+
+@pytest.mark.unit
+def test_remember_node_ocr_only_no_text_message(fake_store, sample_state_with_memory):
+    """Image uploaded with no accompanying text → extraction still runs on OCR alone."""
+    with patch("app.agent.nodes.remember_node.store", fake_store):
+        with patch("app.agent.nodes.remember_node._memory_llm") as mock_llm:
+            mock_llm.invoke.return_value = MemoryDecision(
+                should_write=True,
+                memories=[
+                    MemoryItem(
+                        text="Blood glucose fasting: 132 mg/dL",
+                        category=MemoryCategory.LAB_RESULT,
+                        status="active",
+                        is_new=True,
+                    ),
+                ],
+            )
+
+            state = sample_state_with_memory(
+                raw_input="",
+                ocr_context="Fasting blood sugar: 132 mg/dL",
+            )
+            result = remember_node(state)
+
+            # LLM should still have been called (OCR present)
+            assert mock_llm.invoke.called
+
+            # The user turn should be non-empty (placeholder)
+            user_msg = mock_llm.invoke.call_args[0][0][1]
+            assert user_msg["content"] != ""
+
+            # The lab fact should be persisted and surfaced
+            assert result["saved_memory"] is True
+            assert "LAB RESULTS:" in result["remembered_context"]
+            assert "132 mg/dL" in result["remembered_context"]
+
+
+@pytest.mark.unit
+def test_remember_node_no_ocr_no_text_skips_llm(fake_store, sample_state_with_memory):
+    """Neither text nor OCR → no LLM call, existing context returned."""
+    fake_store.put(
+        ("patient_memories", "test-patient-01"),
+        "existing-1",
+        {"data": _store_dict("Patient is 28 years old", category="identity")},
+    )
+
+    with patch("app.agent.nodes.remember_node.store", fake_store):
+        with patch("app.agent.nodes.remember_node._memory_llm") as mock_llm:
+            state = sample_state_with_memory(raw_input="", ocr_context="")
+            result = remember_node(state)
+
+            assert not mock_llm.invoke.called
+            assert result["saved_memory"] is False
+            assert "Patient is 28 years old" in result["remembered_context"]
+
+
+@pytest.mark.unit
+def test_remember_node_no_ocr_block_when_empty(fake_store, sample_state_with_memory):
+    """No OCR attached → the system prompt should not contain the DOCUMENT TEXT block."""
+    with patch("app.agent.nodes.remember_node.store", fake_store):
+        with patch("app.agent.nodes.remember_node._memory_llm") as mock_llm:
+            mock_llm.invoke.return_value = MemoryDecision(
+                should_write=False, memories=[],
+            )
+
+            state = sample_state_with_memory(raw_input="hello", ocr_context="")
+            remember_node(state)
+
+            system_msg = mock_llm.invoke.call_args[0][0][0]
+            assert "DOCUMENT TEXT" not in system_msg.content
+
+
+@pytest.mark.unit
+def test_remember_node_ocr_duplicate_not_rewritten(fake_store, sample_state_with_memory):
+    """OCR fact already known → is_new=False → nothing written."""
+    fake_store.put(
+        ("patient_memories", "test-patient-01"),
+        "existing-1",
+        {"data": _store_dict("Prescribed Panadol 500mg twice daily", category="medication")},
+    )
+
+    with patch("app.agent.nodes.remember_node.store", fake_store):
+        with patch("app.agent.nodes.remember_node._memory_llm") as mock_llm:
+            mock_llm.invoke.return_value = MemoryDecision(
+                should_write=True,
+                memories=[
+                    MemoryItem(
+                        text="Prescribed Panadol 500mg twice daily",
+                        category=MemoryCategory.MEDICATION,
+                        status="active",
+                        is_new=False,
+                    ),
+                ],
+            )
+
+            state = sample_state_with_memory(
+                raw_input="same prescription again",
+                ocr_context="Rx: Panadol 500mg BD",
+            )
+            result = remember_node(state)
+
+            # No new rows
+            assert len(fake_store._data[("patient_memories", "test-patient-01")]) == 1
+            assert result["saved_memory"] is False
+            # But the existing fact still shows up in context
+            assert "Panadol" in result["remembered_context"]
+
+
+# ── Phase 2: fact lifecycle / supersession tests ──────────────────────────────
+
+@pytest.mark.unit
+def test_supersession_resolves_symptom(fake_store, sample_state_with_memory):
+    """'My headache is gone' → the existing headache record flips to resolved
+    in place; no duplicate row; BioMistral sees it under RESOLVED HISTORY."""
+    fake_store.put(
+        ("patient_memories", "test-patient-01"),
+        "headache-key",
+        {"data": _store_dict(
+            "Patient has a persistent headache", "symptom",
+            severity="moderate", onset="3 days ago",
+        )},
+    )
+
+    with patch("app.agent.nodes.remember_node.store", fake_store):
+        with patch("app.agent.nodes.remember_node._memory_llm") as mock_llm:
+            mock_llm.invoke.return_value = MemoryDecision(
+                should_write=True,
+                memories=[
+                    MemoryItem(
+                        text="Patient's headache has resolved",
+                        category=MemoryCategory.SYMPTOM,
+                        status="resolved",
+                        supersedes_id="headache-key",
+                        is_new=True,
+                    ),
+                ],
+            )
+
+            state = sample_state_with_memory(raw_input="My headache is gone now")
+            result = remember_node(state)
+
+            # Still exactly one row — updated, not duplicated
+            rows = fake_store._data[("patient_memories", "test-patient-01")]
+            assert len(rows) == 1
+            assert "headache-key" in rows
+
+            # The record itself now says resolved with the new text
+            data = rows["headache-key"]["data"]
+            assert data["status"] == "resolved"
+            assert data["text"] == "Patient's headache has resolved"
+
+            # The change counts as a save for the UI flag
+            assert result["saved_memory"] is True
+
+            # Downstream context: resolved, not active
+            ctx = result["remembered_context"]
+            assert "RESOLVED HISTORY:" in ctx
+            active_line = next(
+                (l for l in ctx.split("\n") if "ACTIVE SYMPTOMS" in l), ""
+            )
+            assert active_line == ""  # no active symptoms section at all
+
+
+@pytest.mark.unit
+def test_supersession_updates_severity(fake_store, sample_state_with_memory):
+    """'Headache getting worse' → same row updated to severe, still active."""
+    fake_store.put(
+        ("patient_memories", "test-patient-01"),
+        "headache-key",
+        {"data": _store_dict(
+            "Patient has a persistent headache", "symptom",
+            severity="moderate", onset="3 days ago",
+        )},
+    )
+
+    with patch("app.agent.nodes.remember_node.store", fake_store):
+        with patch("app.agent.nodes.remember_node._memory_llm") as mock_llm:
+            mock_llm.invoke.return_value = MemoryDecision(
+                should_write=True,
+                memories=[
+                    MemoryItem(
+                        text="Patient's headache is worsening",
+                        category=MemoryCategory.SYMPTOM,
+                        status="active",
+                        severity="severe",
+                        onset="3 days ago",
+                        supersedes_id="headache-key",
+                        is_new=True,
+                    ),
+                ],
+            )
+
+            state = sample_state_with_memory(raw_input="My headache is getting worse")
+            result = remember_node(state)
+
+            rows = fake_store._data[("patient_memories", "test-patient-01")]
+            assert len(rows) == 1
+
+            data = rows["headache-key"]["data"]
+            assert data["severity"] == "severe"
+            assert data["status"] == "active"
+            assert data["text"] == "Patient's headache is worsening"
+
+            # Still surfaced as an active symptom, now with severe
+            assert "ACTIVE SYMPTOMS:" in result["remembered_context"]
+            assert "severe" in result["remembered_context"]
+
+
+@pytest.mark.unit
+def test_supersession_missing_key_falls_back_to_new_write(fake_store, sample_state_with_memory):
+    """Hallucinated supersedes_id → graceful fallback: write as a new fact."""
+    with patch("app.agent.nodes.remember_node.store", fake_store):
+        with patch("app.agent.nodes.remember_node._memory_llm") as mock_llm:
+            mock_llm.invoke.return_value = MemoryDecision(
+                should_write=True,
+                memories=[
+                    MemoryItem(
+                        text="Patient's headache has resolved",
+                        category=MemoryCategory.SYMPTOM,
+                        status="resolved",
+                        supersedes_id="does-not-exist",
+                        is_new=True,
+                    ),
+                ],
+            )
+
+            state = sample_state_with_memory(raw_input="My headache is gone")
+            result = remember_node(state)
+
+            # A new row was written under a fresh key instead
+            rows = fake_store._data[("patient_memories", "test-patient-01")]
+            assert len(rows) == 1
+            assert "does-not-exist" not in rows
+            assert result["saved_memory"] is True
+
+
+@pytest.mark.unit
+def test_extraction_prompt_shows_keys_not_downstream(fake_store, sample_state_with_memory):
+    """The extraction LLM sees [key] references; BioMistral's context does not."""
+    fake_store.put(
+        ("patient_memories", "test-patient-01"),
+        "headache-key",
+        {"data": _store_dict("Patient has a persistent headache", "symptom")},
+    )
+
+    with patch("app.agent.nodes.remember_node.store", fake_store):
+        with patch("app.agent.nodes.remember_node._memory_llm") as mock_llm:
+            mock_llm.invoke.return_value = MemoryDecision(
+                should_write=False, memories=[],
+            )
+
+            state = sample_state_with_memory(raw_input="hello")
+            result = remember_node(state)
+
+            # Extraction prompt: keyed format
+            system_msg = mock_llm.invoke.call_args[0][0][0]
+            assert "[headache-key]" in system_msg.content
+
+            # Downstream context: clean, no keys
+            assert "[headache-key]" not in result["remembered_context"]
+            assert "headache-key" not in result["remembered_context"]
+
+
+@pytest.mark.unit
+def test_supersession_and_new_fact_same_turn(fake_store, sample_state_with_memory):
+    """One turn can both update an existing fact and add a brand-new one."""
+    fake_store.put(
+        ("patient_memories", "test-patient-01"),
+        "headache-key",
+        {"data": _store_dict("Patient has a persistent headache", "symptom",
+                             severity="moderate")},
+    )
+
+    with patch("app.agent.nodes.remember_node.store", fake_store):
+        with patch("app.agent.nodes.remember_node._memory_llm") as mock_llm:
+            mock_llm.invoke.return_value = MemoryDecision(
+                should_write=True,
+                memories=[
+                    MemoryItem(
+                        text="Patient's headache has resolved",
+                        category=MemoryCategory.SYMPTOM,
+                        status="resolved",
+                        supersedes_id="headache-key",
+                        is_new=True,
+                    ),
+                    MemoryItem(
+                        text="Patient started feeling mild nausea",
+                        category=MemoryCategory.SYMPTOM,
+                        status="active",
+                        severity="mild",
+                        is_new=True,
+                    ),
+                ],
+            )
+
+            state = sample_state_with_memory(
+                raw_input="Headache is gone but I feel nauseous now"
+            )
+            result = remember_node(state)
+
+            # One updated row + one new row
+            rows = fake_store._data[("patient_memories", "test-patient-01")]
+            assert len(rows) == 2
+            assert rows["headache-key"]["data"]["status"] == "resolved"
+
+            ctx = result["remembered_context"]
+            assert "RESOLVED HISTORY:" in ctx
+            assert "ACTIVE SYMPTOMS:" in ctx
+            assert "nausea" in ctx
+            assert result["saved_memory"] is True

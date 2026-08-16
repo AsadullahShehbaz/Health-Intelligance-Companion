@@ -44,8 +44,9 @@ class MemoryItem(BaseModel):
     )
     supersedes_id: str | None = Field(
         default=None,
-        description="If this memory updates/replaces an earlier one, set to the "
-        "earlier memory's store key. Otherwise null.",
+        description="Set ONLY when this fact updates/replaces an existing "
+        "memory: copy that memory's [key] from CURRENT PATIENT DETAILS "
+        "exactly. Otherwise null.",
     )
     is_new: bool = Field(
         description="True if this memory is NEW and should be stored. "

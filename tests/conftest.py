@@ -330,8 +330,8 @@ def fake_store():
         def search(self, namespace, query="", limit=5):
             ns = tuple(namespace)
             items = [
-                SimpleNamespace(value=v)
-                for v in self._data.get(ns, {}).values()
+                SimpleNamespace(key=k, value=v)
+                for k, v in self._data.get(ns, {}).items()
             ]
             return items[:limit]
 
