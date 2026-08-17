@@ -17,6 +17,7 @@ EXCLUDE_DIRS = {
     "gradio-app",
     "notebooks",
     "docs"
+    
 }
 
 # Files or extensions to skip
@@ -42,6 +43,7 @@ EXCLUDE_EXTENSIONS = {
     ".gz",
     ".sqlite3",
     ".db",
+    ".md"
 }
 
 

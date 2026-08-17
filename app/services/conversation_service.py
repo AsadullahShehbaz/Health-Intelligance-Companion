@@ -40,7 +40,8 @@ _TURN_FIELDS = """
     checkpoint->'channel_values'->>'detected_lang'     AS detected_lang,
     checkpoint->'channel_values'->>'retrieval_decision' AS retrieval_decision,
     (checkpoint->'channel_values'->>'needs_rag')::boolean AS needs_rag,
-    checkpoint->'channel_values'->'retrieved_docs'     AS retrieved_docs,
+    checkpoint->'channel_values'->>'retrieved_docs'     AS retrieved_docs,
+    checkpoint->'channel_values'->>'thread_title'       AS thread_title,
     checkpoint->>'ts'                                  AS ts
 """
 
@@ -101,7 +102,13 @@ def _fetch_turns(patient_id: str, thread_id: str | None = None) -> list[dict]:
 
 
 def _title(turns: list[dict]) -> str:
-    """Conversation title = first user message; the sidebar truncates it."""
+    """Conversation title: the LLM-generated ``thread_title`` written on the
+    thread's first turn, falling back to the first user message (pre-title
+    threads), then a placeholder."""
+    for t in turns:
+        title = (t.get("thread_title") or "").strip()
+        if title:
+            return title
     for t in turns:
         if t["raw_input"] and t["raw_input"].strip():
             return t["raw_input"].strip()

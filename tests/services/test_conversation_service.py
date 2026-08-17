@@ -25,6 +25,36 @@ def test_title_fallback_when_all_empty():
     assert svc._title(turns) == "Untitled conversation"
 
 
+@pytest.mark.unit
+def test_title_prefers_llm_thread_title_over_raw_input():
+    """When the thread carries an LLM-generated title, it wins over the
+    first-message fallback."""
+    turns = [
+        {"thread_title": "Fever Management Advice",
+         "raw_input": "I have a 102 fever since yesterday, what should I do?",
+         "final_response": "a1"},
+        {"thread_title": "Fever Management Advice",
+         "raw_input": "thanks", "final_response": "a2"},
+    ]
+    assert svc._title(turns) == "Fever Management Advice"
+
+
+@pytest.mark.unit
+def test_title_falls_back_when_thread_title_blank():
+    """Blank thread_title values are skipped, not returned as the title."""
+    turns = [
+        {"thread_title": "   ", "raw_input": "What is diabetes?", "final_response": "a"},
+    ]
+    assert svc._title(turns) == "What is diabetes?"
+
+
+@pytest.mark.unit
+def test_title_legacy_threads_without_thread_title_key():
+    """Pre-title checkpoints have no thread_title field at all."""
+    turns = [{"raw_input": "What is diabetes?", "final_response": "a"}]
+    assert svc._title(turns) == "What is diabetes?"
+
+
 # ── _sources ──────────────────────────────────────────────────────────────────
 
 @pytest.mark.unit

@@ -21,6 +21,7 @@ class AgentState(TypedDict):
     retrieved_docs: list[dict]
     saved_memory: bool     # per-turn: a memory tool ran THIS turn (not a prior one)
     detected_lang: str     # kept for conversation_service / agent_service (legacy)
+    thread_title: str      # LLM sidebar title, set once on a thread's first turn
 
     # answer/final_response are the same text right now (Phase 2 removed the
     # translate_out node that used to translate answer -> final_response).

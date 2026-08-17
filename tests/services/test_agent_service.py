@@ -173,6 +173,103 @@ async def test_run_agent_uses_thread_id_when_provided(monkeypatch):
     assert captured_config["configurable"]["thread_id"] == "conv-uuid-123"
 
 
+# ── thread title generation (first turn only) ───────────────────────────────
+
+def _canned_result():
+    return {
+        "final_response": "ok", "detected_lang": "en",
+        "needs_rag": False, "retrieved_docs": [], "saved_memory": False,
+    }
+
+
+@pytest.mark.unit
+async def test_run_agent_titles_new_thread(monkeypatch):
+    """First turn (no message history) → LLM title injected into initial state."""
+    from types import SimpleNamespace
+    from app.services import agent_service
+
+    captured_state = {}
+
+    class _NewThreadAgent:
+        def get_state(self, config):
+            return SimpleNamespace(values={})  # empty → brand-new thread
+
+        def invoke(self, state, config):
+            captured_state.update(state)
+            return _canned_result()
+
+    monkeypatch.setattr(agent_service, "agent", _NewThreadAgent())
+
+    async def _fake_title(user_message):
+        return "Fever Treatment Advice"
+
+    monkeypatch.setattr(agent_service, "generate_thread_title", _fake_title)
+
+    req = AgentRequest(patient_id="p1", query="I have a fever", thread_id="t-new")
+    await run_agent(req)
+
+    assert captured_state["thread_title"] == "Fever Treatment Advice"
+
+
+@pytest.mark.unit
+async def test_run_agent_skips_title_for_existing_thread(monkeypatch):
+    """Threads with message history → no title call, no thread_title in state."""
+    from types import SimpleNamespace
+    from app.services import agent_service
+
+    captured_state = {}
+
+    class _ExistingThreadAgent:
+        def get_state(self, config):
+            return SimpleNamespace(values={"messages": ["u1", "a1"]})
+
+        def invoke(self, state, config):
+            captured_state.update(state)
+            return _canned_result()
+
+    monkeypatch.setattr(agent_service, "agent", _ExistingThreadAgent())
+
+    async def _must_not_run(user_message):
+        raise AssertionError("generate_thread_title must not run on existing threads")
+
+    monkeypatch.setattr(agent_service, "generate_thread_title", _must_not_run)
+
+    req = AgentRequest(patient_id="p1", query="more fever advice", thread_id="t-old")
+    await run_agent(req)
+
+    assert "thread_title" not in captured_state
+
+
+@pytest.mark.unit
+async def test_run_agent_state_check_failure_skips_title(monkeypatch):
+    """Fail-open: if the thread-state read errors, the turn still runs —
+    just without a generated title."""
+    from app.services import agent_service
+
+    captured_state = {}
+
+    class _BrokenGetStateAgent:
+        def get_state(self, config):
+            raise RuntimeError("checkpointer unreachable")
+
+        def invoke(self, state, config):
+            captured_state.update(state)
+            return _canned_result()
+
+    monkeypatch.setattr(agent_service, "agent", _BrokenGetStateAgent())
+
+    async def _must_not_run(user_message):
+        raise AssertionError("title generation must be skipped when state check fails")
+
+    monkeypatch.setattr(agent_service, "generate_thread_title", _must_not_run)
+
+    req = AgentRequest(patient_id="p1", query="hello", thread_id="t-x")
+    resp = await run_agent(req)
+
+    assert resp.answer == "ok"
+    assert "thread_title" not in captured_state
+
+
 @pytest.mark.unit
 def test_validate_llm_connection_reports_unreachable_backend(monkeypatch):
     import httpx

@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.rag.embedder import get_embedder
-from app.api import auth, chat, rag, agent
+from app.api import auth, chat, agent,voice
 from app.config import settings
 from app.db.lifespan import lifespan as db_lifespan
 from app.db.session import init_models
@@ -67,8 +67,8 @@ app.add_middleware(
 
 app.include_router(auth.router)
 app.include_router(chat.router)
-app.include_router(rag.router)
-app.include_router(agent.router)   # new
+app.include_router(agent.router)   
+app.include_router(voice.router)
 
 @app.get("/")
 async def root():

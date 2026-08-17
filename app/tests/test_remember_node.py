@@ -9,7 +9,11 @@ import pytest
 from unittest.mock import patch
 from types import SimpleNamespace
 
-from app.agent.nodes.remember_node import remember_node, _format_existing
+from app.agent.nodes.remember_node import (
+    remember_node,
+    _format_existing,
+    _select_memories,
+)
 from app.agent.state import AgentState
 from app.agent.memory_schema import (
     MemoryCategory,
@@ -675,3 +679,123 @@ def test_supersession_and_new_fact_same_turn(fake_store, sample_state_with_memor
             assert "ACTIVE SYMPTOMS:" in ctx
             assert "nausea" in ctx
             assert result["saved_memory"] is True
+
+
+# ── Phase 4: scaling tests ────────────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_select_memories_caps_and_keeps_identity():
+    """Selection caps total memories but identity facts always survive."""
+    memories = [
+        _store_dict(f"Symptom fact {i}", "symptom") for i in range(50)
+    ] + [
+        _store_dict("Patient name is Ayan", "identity"),
+        _store_dict("Patient lives in Lahore", "identity"),
+    ]
+
+    selected = _select_memories(memories, topic="", cap=30)
+
+    assert len(selected) == 30
+    texts = [m["text"] for m in selected]
+    assert "Patient name is Ayan" in texts
+    assert "Patient lives in Lahore" in texts
+    # Recency fallback (empty topic): the LAST 28 symptoms win, not the first
+    assert "Symptom fact 49" in texts
+    assert "Symptom fact 0" not in texts
+
+
+@pytest.mark.unit
+def test_select_memories_noop_under_cap():
+    """Fewer memories than the cap → returned unchanged."""
+    memories = [_store_dict("Only fact", "symptom")]
+    assert _select_memories(memories, topic="anything") == memories
+
+
+@pytest.mark.unit
+def test_semantic_ranking_prefers_relevant_facts(monkeypatch):
+    """A fact relevant to the topic outranks more-recent irrelevant facts."""
+    import numpy as np
+    import app.core.rag.embedder as embedder_mod
+
+    class _KeywordEmbedder:
+        """Maps keywords to orthogonal axes so similarity is controllable."""
+
+        axes = ["headache", "sleep"]
+
+        def encode(self, text, **kwargs):
+            vec = np.zeros(len(self.axes))
+            low = text.lower()
+            for i, kw in enumerate(self.axes):
+                if kw in low:
+                    vec[i] = 1.0
+            return vec
+
+    monkeypatch.setattr(embedder_mod, "get_embedder", lambda: _KeywordEmbedder())
+
+    # The relevant headache fact is the OLDEST; 40 newer sleep facts exist.
+    memories = [_store_dict("Patient has a throbbing headache", "symptom")]
+    memories += [_store_dict(f"Sleep habit note {i}", "lifestyle") for i in range(40)]
+
+    selected = _select_memories(memories, topic="my headache is worse", cap=3)
+
+    texts = [m["text"] for m in selected]
+    assert "Patient has a throbbing headache" in texts
+    # The two filler slots went to the most recent sleep facts
+    assert "Sleep habit note 39" in texts
+
+
+@pytest.mark.unit
+def test_extraction_prompt_stays_bounded_with_200_memories(
+    fake_store, sample_state_with_memory, monkeypatch,
+):
+    """Scaling guard (plan Phase 6): 200+ stored memories → both the
+    extraction prompt and the downstream context stay bounded, and identity
+    facts still survive selection."""
+    import numpy as np
+    import app.core.rag.embedder as embedder_mod
+
+    class _ZeroEmbedder:
+        """All-zero vectors → semantic ranking unavailable → recency fallback
+        (deterministic, and no real model load in unit tests)."""
+
+        def encode(self, text, **kwargs):
+            return np.zeros(8)
+
+    monkeypatch.setattr(embedder_mod, "get_embedder", lambda: _ZeroEmbedder())
+
+    # Identity first: it must land within store.search's limit=200 window.
+    fake_store.put(
+        ("patient_memories", "test-patient-01"),
+        "id-1",
+        {"data": _store_dict("Patient name is Ayan", "identity")},
+    )
+    for i in range(200):
+        fake_store.put(
+            ("patient_memories", "test-patient-01"),
+            f"mem-{i}",
+            {"data": _store_dict(f"Symptom fact number {i}", "symptom")},
+        )
+
+    with patch("app.agent.nodes.remember_node.store", fake_store):
+        with patch("app.agent.nodes.remember_node._memory_llm") as mock_llm:
+            mock_llm.invoke.return_value = MemoryDecision(
+                should_write=False, memories=[],
+            )
+
+            state = sample_state_with_memory(raw_input="I have a headache")
+            result = remember_node(state)
+
+            system_text = mock_llm.invoke.call_args[0][0][0].content
+
+            # Extraction prompt echoes at most cap(30) non-identity facts —
+            # not all 200 — plus the identity fact.
+            assert system_text.count("Symptom fact number") <= 30
+            assert "Patient name is Ayan" in system_text
+            # Char-budget guard: bounded prompt regardless of history size
+            assert len(system_text) < 6000
+
+            # Downstream BioMistral block is bounded too
+            ctx = result["remembered_context"]
+            assert ctx.count("Symptom fact number") <= 30
+            assert len(ctx) < 3000
+            assert "Patient name is Ayan" in ctx

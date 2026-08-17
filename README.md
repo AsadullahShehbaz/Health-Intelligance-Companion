@@ -1,1407 +1,278 @@
-# 🩺 AI-Powered Personal Health Intelligence Companion
+# AI-Powered Personal Health Intelligence Companion
 
-<p align="center">
-  <img src="https://img.shields.io/badge/AI-Healthcare-0A7B83?style=for-the-badge" alt="AI Healthcare">
-  <img src="https://img.shields.io/badge/LLM-BioMistral-6C5CE7?style=for-the-badge" alt="BioMistral">
-  <img src="https://img.shields.io/badge/Agent-LangGraph-FF6B35?style=for-the-badge" alt="LangGraph">
-  <img src="https://img.shields.io/badge/Backend-FastAPI-009688?style=for-the-badge" alt="FastAPI">
-  <img src="https://img.shields.io/badge/VectorDB-Qdrant-D04A02?style=for-the-badge" alt="Qdrant">
-  <img src="https://img.shields.io/badge/Database-PostgreSQL-336791?style=for-the-badge" alt="PostgreSQL">
-</p>
+**Final Year Project (BSCS) — AI/ML Engineering Track**
 
-<p align="center">
-  <strong>A multilingual AI health companion for natural Urdu, English, and Roman-Urdu medical conversations.</strong>
-</p>
+A conversational medical AI system that combines a fine-tuned medical LLM, retrieval-augmented generation, multimodal OCR, and persistent structured patient memory to give patients holistic, history-aware health guidance — not just single-turn symptom lookup.
 
-<p align="center">
-  <em>Fine-Tuned Medical LLM • Agentic AI • Patient Memory • Medical RAG • OCR • Local Inference</em>
-</p>
+> **Scope note:** The current implementation is **100% English**. Urdu/Roman-Urdu support described in the original proposal is a future-work item, not part of the present build (see [Deviations from the Original Proposal](#deviations-from-the-original-proposal)).
 
 ---
 
-## 📌 Table of Contents
+## 1. Problem Statement
 
-* [🌟 Overview](#-overview)
-* [🎯 Problem Statement](#-problem-statement)
-* [💡 Project Vision](#-project-vision)
-* [✨ Key Features](#-key-features)
-* [🧠 AI Architecture](#-ai-architecture)
-* [🏗️ System Architecture](#️-system-architecture)
-* [🔄 End-to-End Workflow](#-end-to-end-workflow)
-* [🤖 Agentic Workflow](#-agentic-workflow)
-* [🧠 Patient Memory](#-patient-memory)
-* [🔎 Medical Knowledge Retrieval](#-medical-knowledge-retrieval)
-* [📄 Medical OCR](#-medical-ocr)
-* [🌐 Multilingual Communication](#-multilingual-communication)
-* [🗃️ Data Model](#️-data-model)
-* [🛠️ Technology Stack](#️-technology-stack)
-* [📁 Project Structure](#-project-structure)
-* [🚀 Installation](#-installation)
-* [⚙️ Environment Configuration](#️-environment-configuration)
-* [▶️ Running the Application](#️-running-the-application)
-* [🧪 Testing & Evaluation](#-testing--evaluation)
-* [📊 FYP Architecture Diagrams](#-fyp-architecture-diagrams)
-* [🔬 Research Contribution](#-research-contribution)
-* [🚧 Limitations](#-limitations)
-* [🗺️ Roadmap](#️-roadmap)
-* [⚠️ Medical Disclaimer](#️-medical-disclaimer)
-* [👥 Team](#-team)
-* [📄 License](#-license)
+Patients — particularly in under-resourced healthcare systems — struggle to communicate their full medical context to doctors in a short consultation window. Decisions often get made on a few minutes of verbal symptom description, with no structured access to prior prescriptions, lab reports, lifestyle factors, or emotional state. Generic chatbot-style AI tools don't solve this: they answer the current message in isolation and forget everything the moment the session ends.
+
+## 2. Solution Overview
+
+This system is a **patient-memory-first medical assistant**. Every conversation turn:
+
+1. Extracts and stores durable, structured facts about the patient (identity, symptoms, medications, lab results, lifestyle, emotional state) into a persistent memory store.
+2. Decides — via an LLM router — whether the current query needs external medical knowledge (internal vector DB or live web search).
+3. Generates a final, empathetic answer using a **domain-fine-tuned medical LLM**, grounded in the patient's accumulated history, any OCR'd documents, and retrieved medical context.
+
+The result is a system that reasons **holistically** — cross-referencing active symptoms against current medications, lifestyle, and lab results — rather than answering each message as a stateless Q&A pair.
 
 ---
 
-# 🌟 Overview
+## 3. Core Technologies
 
-**AI-Powered Personal Health Intelligence Companion** is a Final Year Project focused on developing an intelligent conversational healthcare assistant that can understand patients in **English, Urdu, Roman Urdu, and mixed Urdu-English conversations**.
+| Layer | Technology | Notes |
+|---|---|---|
+| Diagnostic / Chat LLM | **BioMistral-7B, fine-tuned (QLoRA) on a 10K-sample medical instruction dataset** | Served locally via `llama.cpp` / GGUF (`llama_cpp_python`), exposed as an OpenAI-compatible endpoint and consumed through `langchain_openai.ChatOpenAI` |
+| Orchestration / Router LLM | `openai/gpt-oss-120b` via **Groq** | Used for tool-routing (RAG decision) and structured-output memory extraction — fast, cheap, and reliable for tool-calling, keeping the fine-tuned model dedicated to the final diagnostic response |
+| Agent Framework | **LangGraph** | Stateful, checkpointed multi-node graph (see [Architecture](#4-agent-architecture)) |
+| Vector Database | **Qdrant (Cloud instance)** | Stores the medical knowledge base (disease info, MedQA, PubMed-derived content) for RAG |
+| Embeddings | `sentence-transformers/all-MiniLM-L6-v2` | Used for both RAG document retrieval and semantic memory-relevance ranking |
+| Relational / Checkpoint DB | **PostgreSQL — Neon (Cloud, serverless/autosuspending)** | Backs (a) LangGraph's conversation checkpointer, (b) LangGraph's long-term memory `Store`, and (c) the SQLAlchemy `users` / `refresh_tokens` / `tokens` auth tables |
+| OCR / Vision | **Groq-hosted Qwen VLM** (`qwen/qwen3.6-27b` via `langchain_groq.ChatGroq`) | Extracts structured clinical text (diagnosis, meds, lab values, vitals) from photographed prescriptions and lab reports |
+| Web Search Fallback | SerpAPI | Corrective-RAG fallback when internal knowledge base retrieval is weak/insufficient |
+| Backend API | **FastAPI** (async) | JWT + refresh-token auth, streaming chat, and agent endpoints |
+| Frontend | **React 19 + Vite + Tailwind CSS v4** | Chat UI, conversation sidebar, auth modals |
+| Testing / Eval | `pytest`, ROUGE, BERTScore, custom hallucination/grounding rubric | Compares fine-tuned-only vs. RAG-augmented responses |
 
-Unlike a traditional question-answer chatbot, the proposed system combines:
+---
 
-```text
-                    ┌─────────────────────┐
-                    │   Patient / User    │
-                    └──────────┬──────────┘
-                               │
-                               ▼
-                    ┌─────────────────────┐
-                    │      FastAPI        │
-                    │  API + OCR Layer    │
-                    └──────────┬──────────┘
-                               │
-                               ▼
-                    ┌─────────────────────┐
-                    │     LangGraph       │
-                    │   Agentic Layer     │
-                    └──────────┬──────────┘
-                               │
-              ┌────────────────┼────────────────┐
-              │                │                │
-              ▼                ▼                ▼
-        ┌───────────┐    ┌───────────┐   ┌────────────┐
-        │ BioMistral│    │  Patient  │   │  Medical   │
-        │    LLM    │    │  Memory   │   │    RAG     │
-        └───────────┘    └───────────┘   └────────────┘
-              │                │                │
-              └────────────────┼────────────────┘
-                               ▼
-                    ┌─────────────────────┐
-                    │  Health Response    │
-                    └─────────────────────┘
+## 4. Agent Architecture
+
+The core reasoning engine is a **LangGraph state machine** with three primary nodes, compiled once at startup and checkpointed to Postgres so every conversation is resumable across requests.
+
 ```
-
-The goal is to create a **patient-aware, multilingual, agentic health assistant** rather than simply wrapping an LLM behind a chat interface.
-
----
-
-# 🎯 Problem Statement
-
-Patients do not always describe health problems using formal medical terminology.
-
-In Pakistan, a patient may communicate using:
-
-* Urdu
-* English
-* Roman Urdu
-* Medical terminology
-* Local expressions
-* Informal symptom descriptions
-* Mixed Urdu-English sentences
-
-For example:
-
-```text
-"Mujhe kal se stomach mein bohat pain ho raha hai
-aur khana khanay ke baad zyada ho jata hai."
-```
-
-A healthcare AI system should be able to understand the **meaning and medical context** of such communication rather than requiring the patient to translate everything into formal English.
-
-This project therefore focuses on building a conversational health system optimized around this type of interaction.
-
----
-
-# 💡 Project Vision
-
-The vision of the project is:
-
-> **Build an AI health companion that understands patients in the language they naturally use, remembers relevant health information, retrieves medical knowledge when necessary, and provides structured health guidance.**
-
-The system follows a simple intelligence loop:
-
-```text
-Understand
-    ↓
-Ask
-    ↓
-Remember
-    ↓
-Retrieve
-    ↓
-Reason
-    ↓
-Respond
-```
-
----
-
-# ✨ Key Features
-
-## 🇵🇰 1. Urdu + English + Roman Urdu
-
-The system is designed for natural communication in:
-
-```text
-English
-Urdu
-Roman Urdu
-Urdu + English
-Roman Urdu + English
-```
-
-The architecture removes unnecessary external translation nodes and allows the fine-tuned medical model to directly process the user's language.
-
----
-
-## 🧠 2. Fine-Tuned Medical LLM
-
-The core language model is **BioMistral**, adapted for the project's medical conversational requirements.
-
-The fine-tuning objective focuses on improving the model's ability to handle:
-
-* Medical questions
-* Symptoms
-* Patient conversations
-* Medical terminology
-* Urdu/English interactions
-* Roman-Urdu medical communication
-
-The resulting model can also be quantized for more resource-efficient local inference.
-
----
-
-## 🤖 3. Agentic AI with LangGraph
-
-The system uses **LangGraph** to orchestrate the reasoning workflow.
-
-Instead of:
-
-```text
-User → LLM → Answer
-```
-
-the system follows:
-
-```text
-User
- ↓
-Agent
- ├── Patient Memory
- ├── Medical Knowledge Retrieval
- ├── Web Search when required
- └── BioMistral Reasoning
- ↓
-Final Response
-```
-
-This enables the LLM to decide when additional information is needed.
-
----
-
-## 🧠 4. Persistent Patient Memory
-
-The companion can maintain useful patient information across conversations.
-
-Examples include:
-
-```text
-Chronic conditions
-Medication allergies
-Previously reported symptoms
-Relevant medical history
-Patient-specific facts
-```
-
-The architecture separates:
-
-### Short-Term Memory
-
-Conversation/checkpoint state.
-
-### Long-Term Memory
-
-Persistent patient facts stored using `PostgresStore`.
-
----
-
-## 🔎 5. Medical Knowledge Retrieval
-
-The system uses **Qdrant** as a vector database for medical knowledge retrieval.
-
-```text
-Patient Question
-      ↓
-Semantic Retrieval
-      ↓
-Relevant Medical Documents
-      ↓
-Agent Context
-      ↓
-BioMistral
-      ↓
-Grounded Response
-```
-
-The agent can use retrieval tools when additional medical information is needed.
-
----
-
-## 📄 6. Medical Image OCR
-
-Patients can provide medical images such as:
-
-* Prescriptions
-* Medical reports
-* Other medical documents
-
-The system extracts useful text before the agent graph starts.
-
-```text
-Medical Image
-      ↓
-     OCR
-      ↓
-Extracted Text
-      ↓
-FastAPI Controller
-      ↓
-LangGraph Agent
-      ↓
-BioMistral
-```
-
-This keeps large image payloads outside the persistent agent state.
-
----
-
-## 🩺 7. Holistic Health Guidance
-
-The response architecture is designed around multiple aspects of patient guidance:
-
-```text
-🧾 Medical Interpretation
-💊 Medication Guidance
-🥗 Diet / Pakistani Dietary Considerations
-🏃 Exercise & Lifestyle
-⚠️ Warning Signs
-👨‍⚕️ When to Consult a Doctor
-```
-
----
-
-# 🧠 AI Architecture
-
-The intelligence layer consists of three major components:
-
-```text
-                 ┌─────────────────────┐
-                 │      BioMistral     │
-                 │   Medical LLM       │
-                 └──────────┬──────────┘
-                            │
-                            ▼
-                 ┌─────────────────────┐
-                 │      LangGraph      │
-                 │    Agent Engine     │
-                 └───────┬─────┬───────┘
-                         │     │
-               ┌─────────┘     └──────────┐
-               ▼                           ▼
-      ┌─────────────────┐        ┌─────────────────┐
-      │ Patient Memory  │        │ Medical RAG     │
-      │  PostgresStore  │        │     Qdrant      │
-      └─────────────────┘        └─────────────────┘
-```
-
-### Why Agentic AI?
-
-A rigid pipeline might always execute every component.
-
-The proposed architecture instead allows the agent to decide whether it needs:
-
-* Patient history
-* Medical documents
-* Web information
-* Additional reasoning
-
-This reduces unnecessary processing and keeps the architecture maintainable.
-
----
-
-# 🏗️ System Architecture
-
-The proposed system is organized into four major layers.
-
-```text
-┌───────────────────────────────────────────────────────────┐
-│                    PRESENTATION LAYER                     │
-│                     Web / Mobile UI                       │
-└────────────────────────────┬──────────────────────────────┘
-                             │
-                             ▼
-┌───────────────────────────────────────────────────────────┐
-│                     API GATEWAY LAYER                     │
-│                         FastAPI                           │
-│             Authentication • OCR • Routing                │
-└────────────────────────────┬──────────────────────────────┘
-                             │
-                             ▼
-┌───────────────────────────────────────────────────────────┐
-│                       AGENT CORE                           │
-│                       LangGraph                            │
-│                       BioMistral                           │
-│               Reasoning • Tool Selection                   │
-└───────────────┬─────────────────────────┬─────────────────┘
-                │                         │
-                ▼                         ▼
-┌────────────────────────┐     ┌────────────────────────────┐
-│   PERSISTENCE LAYER    │     │     KNOWLEDGE LAYER        │
-│                        │     │                            │
-│ PostgreSQL             │     │ Qdrant                     │
-│ PostgresSaver          │     │ Medical Documents          │
-│ PostgresStore          │     │ Vector Retrieval            │
-└────────────────────────┘     └────────────────────────────┘
-```
-
-The SRS defines these four layers as the Presentation, API Gateway, Agent Core, and Persistence layers.
-
----
-
-# 🔄 End-to-End Workflow
-
-```text
-                         USER
-                           │
-                           ▼
-                  ┌─────────────────┐
-                  │  Submit Query   │
-                  └────────┬────────┘
-                           │
-                           ▼
-                  ┌─────────────────┐
-                  │    FastAPI      │
-                  │ Authentication  │
-                  └────────┬────────┘
-                           │
-                           ▼
-                    Image Attached?
-                      /         \
-                    YES          NO
-                     │            │
-                     ▼            │
-                   ┌────┐         │
-                   │OCR │         │
-                   └─┬──┘         │
-                     │            │
-                     └─────┬──────┘
-                           ▼
-                  ┌─────────────────┐
-                  │  LangGraph     │
-                  │     Agent      │
-                  └────────┬───────┘
-                           │
-              ┌────────────┼────────────┐
-              │            │            │
-              ▼            ▼            ▼
-          Patient       Qdrant       Web Search
-          Memory        Retrieval    (if needed)
-              │            │            │
-              └────────────┼────────────┘
-                           ▼
-                  ┌─────────────────┐
-                  │   BioMistral    │
-                  │    Reasoning    │
-                  └────────┬────────┘
-                           │
-                           ▼
-                  ┌─────────────────┐
-                  │ Final Response  │
-                  └────────┬────────┘
-                           │
-                           ▼
-                         USER
-```
-
----
-
-# 🤖 Agentic Workflow
-
-A typical agent interaction can be represented as:
-
-```text
-User Query
-    │
-    ▼
-┌──────────────────┐
-│ Analyze Request  │
-└────────┬─────────┘
-         │
-         ▼
-┌─────────────────────────┐
-│ Does agent need memory? │
-└───────┬─────────┬───────┘
-        │ YES     │ NO
-        ▼         │
-   Fetch Facts    │
-        │         │
-        └────┬────┘
-             ▼
-┌─────────────────────────┐
-│ Need medical knowledge? │
-└───────┬─────────┬───────┘
-        │ YES     │ NO
-        ▼         │
- Retrieve Docs    │
-        │         │
-        └────┬────┘
-             ▼
-      ┌──────────────┐
-      │  BioMistral  │
-      │   Reasoning  │
-      └──────┬───────┘
-             │
-             ▼
-      ┌──────────────┐
-      │ Final Answer │
-      └──────────────┘
-```
-
----
-
-# 🧠 Patient Memory
-
-Memory is divided into two levels.
-
-## Short-Term Conversation Memory
-
-LangGraph's `PostgresSaver` is used for conversation checkpointing.
-
-```text
-User
- │
- ├── Thread 1
- │    ├── Message
- │    ├── Message
- │    └── Message
- │
- └── Thread 2
-      ├── Message
-      └── Message
-```
-
-## Long-Term Patient Memory
-
-`PostgresStore` maintains semantic patient facts.
-
-```text
-Patient
-   │
-   ├── Medical History
-   ├── Allergies
-   ├── Symptoms
-   ├── Conditions
-   └── Other Relevant Facts
-```
-
-This allows the system to become **patient-aware rather than conversation-only**.
-
----
-
-# 🔎 Medical Knowledge Retrieval
-
-The RAG component is designed around semantic retrieval.
-
-```text
-                   User Question
-                         │
-                         ▼
-                  Query Embedding
-                         │
-                         ▼
                  ┌──────────────┐
-                 │    Qdrant   │
+   user input →  │   Remember   │   (gpt-oss-120b, structured output)
                  └──────┬───────┘
-                        │
+                        │ remembered_context (categorized patient memory)
                         ▼
-                Relevant Documents
-                        │
-                        ▼
-                  Agent Context
-                        │
-                        ▼
-                   BioMistral
-                        │
-                        ▼
-                  Final Response
+                 ┌──────────────┐
+                 │  RAG Router  │   (gpt-oss-120b, tool-calling)
+                 └──────┬───────┘
+                needs tools?  \
+                     yes       no
+                      │         │
+                      ▼         │
+                 ┌──────────┐   │
+                 │  Tools   │   │   retrieve_medical_knowledge (Qdrant)
+                 └────┬─────┘   │   search_web_medical (SerpAPI, corrective fallback)
+                      │         │
+                      ▼         ▼
+                 ┌──────────────────┐
+                 │  Chat (BioMistral)│   final empathetic, grounded answer
+                 └──────────────────┘
+                          │
+                          ▼
+                         END
 ```
 
-The architecture also supports external web search as an additional information source where appropriate.
+### 4.1 Node 1 — `remember_node` (Memory Extraction)
+
+Runs on **every** turn, before routing or retrieval.
+
+- Loads the patient's existing memories from the Postgres-backed LangGraph `Store`.
+- Sends the user's latest message (+ any OCR'd document text) to `gpt-oss-120b` with a **structured-output schema** (`MemoryDecision` → list of `MemoryItem`).
+- Each extracted fact is tagged with a **category** (`identity`, `symptom`, `medication`, `lab_result`, `lifestyle`, `emotional`), a **status** (`active` / `resolved` / `historical`), and optional `severity` / `onset`.
+- **Supersession, not duplication:** if a new fact updates an existing one (e.g. "headache is gone" → resolves a stored headache record; "headache is worse" → updates severity in place), the LLM references the original record's key via `supersedes_id` and the existing row is updated rather than a duplicate being appended. This keeps the patient's timeline as one-row-per-fact instead of accumulating contradictions.
+- **Scaling (Phase 4 optimization):** identity facts always survive into the prompt; everything else is recency-prefiltered to a candidate pool, then ranked by cosine similarity (via the shared embedder) against the turn's topic, and capped — so a patient with hundreds of stored facts still produces a bounded, relevant context block instead of blowing the LLM's context window.
+
+### 4.2 Node 2 — `rag_router_node` (Retrieval Routing)
+
+- A **tool-calling** Groq LLM (`gpt-oss-120b`, `bind_tools`) decides whether the turn needs external medical knowledge.
+- Triggers tools for any medical symptom/question; skips tools for purely conversational turns (greetings, thanks, identity questions already answered by memory).
+- Emits LangGraph `tool_calls`, which are executed by a `ToolNode` wrapping two tools:
+  - **`retrieve_medical_knowledge`** — direct vector search against the Qdrant `health_knowledge` collection (top-k, cosine similarity, score-thresholded).
+  - **`search_web_medical`** — SerpAPI web search, used as a **corrective RAG** fallback when internal retrieval confidence is low or the query is out-of-distribution (e.g. "latest WHO guidance on mpox").
+
+### 4.3 Node 3 — `biomistral_node` (Chat / Diagnosis Generation)
+
+- The **only node that calls the fine-tuned BioMistral model.**
+- Assembles a single clean system prompt containing:
+  - Categorized **patient memory** (IDENTITY / ACTIVE SYMPTOMS / MEDICATIONS / LAB RESULTS / LIFESTYLE / EMOTIONAL STATE / RESOLVED HISTORY)
+  - **OCR context** from any uploaded document (capped to avoid blowing the context window)
+  - **Retrieved medical context** from the tools step
+- Prompt explicitly instructs the model to **cross-reference categories** — e.g. check active symptoms against current medications before suggesting new ones, factor in lifestyle/emotional state, and weight severity/onset for urgency — rather than only pattern-matching the latest message.
+- Guards against hallucination: never invents patient facts, never claims something was saved when memory writes failed, treats retrieved context as supporting (not guaranteed) information.
+
+### 4.4 Why gpt-oss-120b for routing/memory but BioMistral for the final answer?
+
+Tool-calling and structured JSON extraction benefit from a fast, reliable, general-purpose model — Groq's `gpt-oss-120b` is used here purely as **infrastructure** (deciding *whether* to retrieve, and *what facts* to store). The actual **medical answer generation** — the part that needs domain expertise — is delegated entirely to the **fine-tuned BioMistral model**, keeping the fine-tuning investment focused on the task it's specialized for.
 
 ---
 
-# 📄 Medical OCR
+## 5. Model Fine-Tuning
 
-OCR is intentionally positioned at the API/controller layer.
+- **Base model:** BioMistral-7B (medical-domain pretrained Mistral variant)
+- **Method:** QLoRA (parameter-efficient fine-tuning)
+- **Training data:** 10,000 curated medical instruction samples
+- **Serving:** Quantized GGUF checkpoint (Q4_K_M) served locally via `llama.cpp` / `llama-server`, exposed through an OpenAI-compatible `/v1` endpoint and consumed via `langchain_openai.ChatOpenAI` (`app/core/llm.py`)
 
-### Why?
+### 5.1 Evaluation Methodology
 
-Keeping OCR outside the graph avoids storing large Base64 image payloads inside LangGraph checkpoints.
+`app/eval/` contains a full evaluation harness comparing **fine-tuned-only** vs. **RAG-augmented** generation across three query categories:
 
-```text
-                    IMAGE
-                      │
-                      ▼
-                ┌──────────┐
-                │   OCR    │
-                └────┬─────┘
-                     │
-                     ▼
-              Extracted Text
-                     │
-                     ▼
-               Agent Context
-                     │
-                     ▼
-                 LangGraph
-```
+| Category | Count | Purpose |
+|---|---|---|
+| In-distribution | 30 | Standard clinical Q&A (symptoms, causes, diagnosis, treatment) with reference answers, scored via ROUGE-1/2/L and BERTScore |
+| Out-of-distribution | 12 | Recency-dependent questions (e.g. latest WHO/CDC guidance) with no ground truth — tests whether corrective RAG web-fallback kicks in |
+| Ambiguous | 8 | Vague, real-world patient phrasing ("I have chest pain.") — reference answers describe the *appropriate response pattern* (acknowledge + advise care) rather than a diagnosis |
 
-This is one of the major architectural simplifications defined in the SRS.
+Metrics captured per case: **ROUGE-1/2/L**, **BERTScore F1**, latency, retrieval decision, and average retrieval confidence score. A separate `hallucination_check.py` rubric grades groundedness of answers against retrieved sources on a 0–2 scale. Perplexity comparison (`run_perplexity.py`) further quantifies how much retrieved context improves the model's confidence on reference answers.
 
 ---
 
-# 🌐 Multilingual Communication
+## 6. Persistent Patient Memory
 
-The project specifically targets direct multilingual interaction.
+Unlike a stateless chatbot, this system maintains a **structured, evolving patient profile** across sessions, stored in PostgreSQL (Neon) via LangGraph's `Store` abstraction, namespaced per patient.
 
-### Example
-
-**Patient:**
-
-```text
-Mujhe 2 din se headache hai aur medicine lene
-ke baad bhi pain kam nahi ho raha.
+Each memory record carries:
+```
+{
+  "text": "Persistent headache, worsening",
+  "category": "symptom",       // identity | symptom | medication | lab_result | lifestyle | emotional
+  "status": "active",          // active | resolved | historical
+  "severity": "moderate",
+  "onset": "3 days ago"
+}
 ```
 
-**Expected interaction style:**
-
-```text
-Aapka headache 2 din se persist kar raha hai,
-aur medicine ke baad bhi relief nahi mila.
-Kya aapko fever, vomiting, blurred vision,
-ya neck stiffness bhi ho rahi hai?
-```
-
-The objective is not merely translation.
-
-It is:
-
-> **Medical understanding of naturally mixed Pakistani language.**
-
-The SRS explicitly identifies Urdu, English, and mixed/Roman-Urdu symptom elicitation as a functional requirement.
+When BioMistral generates a response, it sees this memory formatted into labeled sections and is explicitly instructed to reason **across** them — e.g. don't recommend a medication that conflicts with something in MEDICATIONS, weight LIFESTYLE and EMOTIONAL STATE alongside physical symptoms, and treat RESOLVED HISTORY as background only.
 
 ---
 
-# 🗃️ Data Model
+## 7. Multimodal Input (OCR)
 
-The simplified architecture contains four major entities:
+- Endpoint: `POST /agent/invoke` accepts an optional `image_base64` (prescription photo, lab report scan).
+- OCR is performed via **Groq's Qwen VLM** (`app/core/rag/ocr.py`), prompted to extract structured clinical fields (patient details, diagnosis, symptoms, vitals, lab values with units, medications with dosages, doctor instructions) while explicitly avoiding speculation on unreadable text (`[unclear]` marker).
+- OCR runs **outside the LangGraph graph**, at the API layer — so raw Base64 image payloads never enter LangGraph checkpoints (which are persisted to Postgres). Only the extracted, structured text is passed into graph state, keeping checkpoint storage lean.
+- Extracted OCR text feeds both `remember_node` (to persist medication/lab facts) and `biomistral_node` (to answer questions about the uploaded document directly).
 
-```text
-                         ┌──────────────┐
-                         │     USER     │
-                         └──────┬───────┘
-                                │
-                   ┌────────────┴────────────┐
-                   │                         │
-                   ▼                         ▼
-          ┌─────────────────┐       ┌─────────────────┐
-          │ Conversation    │       │  Patient Fact   │
-          │     Thread      │       │                 │
-          └─────────────────┘       └─────────────────┘
+---
 
+## 8. Data Layer
 
-                    ┌─────────────────────┐
-                    │ Medical Document   │
-                    │                     │
-                    │ Vector + Metadata  │
-                    └─────────────────────┘
+| Concern | Backend | Details |
+|---|---|---|
+| Conversation state / checkpointing | **PostgreSQL (Neon, Cloud)** via `langgraph.checkpoint.postgres.PostgresSaver` | Every graph turn is checkpointed; the conversation sidebar (`/agent/threads`) is derived **directly from checkpoint rows** — there is no separate conversations table |
+| Long-term patient memory | **PostgreSQL (Neon, Cloud)** via `langgraph.store.postgres.PostgresStore` | Namespaced `(patient_memories, patient_id)` key-value store for structured `MemoryItem` records |
+| Vector search / RAG knowledge base | **Qdrant (Cloud)** | `health_knowledge` collection; retrieval filtered/scored via cosine similarity, `score_threshold=0.3` |
+| App/auth data (users, tokens) | **PostgreSQL (Neon)** via async SQLAlchemy | Standard relational tables: `users`, `refresh_tokens`, `tokens` |
+
+**Neon autosuspend handling:** Because Neon's free/serverless tier suspends an idle compute, both the checkpointer/store connection pool (`app/db/pool.py`) and the Qdrant client wrap queries in a bounded retry with backoff to transparently absorb the "cold start" reconnect without failing the user's request.
+
+---
+
+## 9. Authentication & Security
+
+- **JWT access tokens** (short-lived, default 60 min) + **opaque refresh tokens** (7 days, SHA-256 hashed at rest, rotated on every refresh, individually revocable).
+- Passwords hashed with **Argon2**.
+- Enforced password policy (length, character classes, common-password blocklist) — shared source of truth between backend validation and frontend UX hints.
+- Role-based access control via `require_role` dependency.
+- Full register / login / refresh / logout flow with structured auth-event logging.
+
+---
+
+## 10. Backend API Surface
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout`, `/auth/me` | POST/GET | Auth lifecycle |
+| `/agent/invoke` | POST | Main entry point — runs the full LangGraph pipeline (memory → routing → tools → BioMistral), optionally with an attached image for OCR |
+| `/agent/threads` | GET | Sidebar list of the patient's conversations, derived from checkpoints |
+| `/agent/threads/{thread_id}` | GET | Full transcript of one conversation |
+| `/chat/stream` | POST | Lightweight streaming chat (no agent pipeline — direct BioMistral streaming) |
+| `/rag/stream` | POST | Streaming chat with single-shot corrective RAG (no memory/agent graph) |
+
+---
+
+## 11. Project Structure
+
+```
+app/
+├── agent/
+│   ├── graph.py              # LangGraph state machine wiring (Remember → Router → Tools? → Chat)
+│   ├── state.py               # AgentState TypedDict (shared graph state)
+│   ├── tools.py                # retrieve_medical_knowledge, search_web_medical
+│   ├── memory_schema.py       # MemoryItem / MemoryDecision Pydantic schemas
+│   └── nodes/
+│       ├── remember_node.py    # Memory extraction, supersession, semantic selection
+│       ├── router_node.py      # RAG tool-routing
+│       ├── biomistral_node.py  # Final answer generation
+│       └── prompts.py          # BioMistral system prompt template
+├── api/                        # FastAPI routers (auth, agent, chat, rag)
+├── core/
+│   ├── llm.py                  # BioMistral OpenAI-compatible client
+│   ├── security.py             # JWT / Argon2 / refresh-token primitives
+│   └── rag/
+│       ├── embedder.py         # SentenceTransformer singleton
+│       ├── qdrant_store.py     # Qdrant Cloud client + retrieval
+│       ├── rag_tool.py         # Direct RAG wrapper
+│       ├── corrective_rag.py   # Confidence-gated web-search fallback
+│       └── ocr.py              # Groq Qwen VLM document extraction
+├── db/                          # SQLAlchemy engine + LangGraph Postgres pools/lifespan
+├── models/, schemas/            # ORM models & Pydantic request/response schemas
+├── services/                    # agent_service, chat_service, rag_chat_service, conversation_service
+├── eval/                        # Evaluation harness (ROUGE, BERTScore, perplexity, hallucination rubric)
+└── tests/                       # Unit + integration + live test suites (pytest markers: unit/integration/live)
+
+frontend/                        # React 19 + Vite + Tailwind chat UI
 ```
 
-### Main Entities
-
-| Entity               | Purpose                              |
-| -------------------- | ------------------------------------ |
-| `User`               | Authentication and user identity     |
-| `ConversationThread` | Conversation/checkpoint persistence  |
-| `PatientFact`        | Long-term semantic patient memory    |
-| `MedicalDocument`    | Medical knowledge used for retrieval |
-
-The documented schema defines these entities and their relationships in the simplified architecture.
-
 ---
 
-# 🛠️ Technology Stack
+## 12. Local Setup
 
-## 🧠 Artificial Intelligence
-
-| Technology       | Role                            |
-| ---------------- | ------------------------------- |
-| **BioMistral**   | Medical LLM                     |
-| **QLoRA**        | Parameter-efficient fine-tuning |
-| **llama.cpp**    | Local inference                 |
-| **GGUF**         | Quantized model format          |
-| **Hugging Face** | Models & datasets               |
-
-## 🤖 Agentic AI
-
-| Technology    | Role                   |
-| ------------- | ---------------------- |
-| **LangGraph** | Agent orchestration    |
-| **LangChain** | Tool / LLM integration |
-
-## ⚡ Backend
-
-| Technology  | Role                        |
-| ----------- | --------------------------- |
-| **FastAPI** | REST API                    |
-| **JWT**     | Authentication              |
-| **Python**  | Backend / AI implementation |
-
-## 🗄️ Data
-
-| Technology        | Role                     |
-| ----------------- | ------------------------ |
-| **PostgreSQL**    | Application persistence  |
-| **PostgresSaver** | Conversation checkpoints |
-| **PostgresStore** | Long-term memory         |
-| **Qdrant**        | Vector database          |
-
-## 📄 Document Processing
-
-| Technology | Role                          |
-| ---------- | ----------------------------- |
-| **OCR**    | Medical image text extraction |
-
----
-
-# 📁 Project Structure
-
-```text
-health-intelligence-companion/
-│
-├── app/
-│   │
-│   ├── api/
-│   │   ├── routes/
-│   │   └── dependencies/
-│   │
-│   ├── core/
-│   │   ├── config.py
-│   │   ├── security.py
-│   │   └── llm.py
-│   │
-│   ├── agents/
-│   │   ├── agent.py
-│   │   ├── graph.py
-│   │   ├── state.py
-│   │   └── tools/
-│   │
-│   ├── services/
-│   │   ├── agent_service.py
-│   │   ├── conversation_service.py
-│   │   └── auth_service.py
-│   │
-│   ├── database/
-│   │   ├── postgres.py
-│   │   ├── qdrant_store.py
-│   │   └── memory.py
-│   │
-│   ├── ocr/
-│   │   └── processor.py
-│   │
-│   └── main.py
-│
-├── data/
-│   ├── raw/
-│   ├── processed/
-│   └── knowledge/
-│
-├── models/
-│   └── biomistral/
-│
-├── scripts/
-│   ├── ingest.py
-│   ├── evaluate.py
-│   └── convert_model.py
-│
-├── tests/
-│
-├── .env.example
-├── requirements.txt
-├── Dockerfile
-└── README.md
-```
-
-> The exact implementation structure may differ from this conceptual organization.
-
----
-
-# 🚀 Installation
-
-## 1. Clone the Repository
+**Prerequisites:** Python 3.11+, Node.js, a running BioMistral GGUF server (`llama.cpp`), and Cloud credentials for Neon Postgres, Qdrant, and Groq.
 
 ```bash
-git clone <YOUR_REPOSITORY_URL>
-cd health-intelligence-companion
-```
-
----
-
-## 2. Create Virtual Environment
-
-### Windows
-
-```bash
-python -m venv .venv
-.venv\Scripts\activate
-```
-
-### Linux / macOS
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-```
-
----
-
-## 3. Install Dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
----
-
-# ⚙️ Environment Configuration
-
-Create a `.env` file:
-
-```env
-DATABASE_URL=your_postgresql_url
-
-QDRANT_URL=your_qdrant_url
-QDRANT_API_KEY=your_qdrant_api_key
-
-JWT_SECRET_KEY=your_secret_key
-
-MODEL_PATH=path/to/biomistral.gguf
-```
-
-### 🔐 Security
-
-Never commit:
-
-```text
-.env
-API keys
-Database passwords
-JWT secrets
-Private credentials
-```
-
-to the repository.
-
----
-
-# ▶️ Running the Application
-
-Start the FastAPI server:
-
-```bash
+# Backend
+pip install -r requirements.txt --break-system-packages
+cp .env.example .env   # fill in DATABASE_URL, QDRANT_URL, QDRANT_API_KEY,
+                        #     GROQ_API_KEY, SERP_API_KEY, SECRET_KEY, LLM_BASE_URL, etc.
 uvicorn app.main:app --reload
+
+# Frontend
+cd frontend
+npm install
+npm run dev
 ```
 
-Then open:
+Required environment variables (see `app/config.py`): `DATABASE_URL`, `QDRANT_URL`, `QDRANT_API_KEY`, `HF_TOKEN`, `SECRET_KEY`, `GROQ_API_KEY`, `SERP_API_KEY`, `LLM_MODEL`, `LLM_BASE_URL`, `LLM_API_KEY`.
 
-```text
-http://localhost:8000
-```
+---
 
-FastAPI documentation:
+## 13. Testing
 
-```text
-http://localhost:8000/docs
+```bash
+pytest -m unit           # fast, fully mocked
+pytest -m integration     # ASGI client + mocked externals + sqlite
+RUN_LIVE_TESTS=1 pytest -m live   # requires real Postgres/Qdrant/LLM
 ```
 
 ---
 
-# 🧪 Testing & Evaluation
+## 14. Deviations from the Original Proposal
 
-The project includes evaluation of both **functional correctness** and **architectural performance**.
-
-## 🌐 Multilingual Evaluation
-
-Test cases should cover:
-
-```text
-English
-Urdu
-Roman Urdu
-Mixed Urdu-English
-```
+| Proposal | Current Implementation |
+|---|---|
+| Urdu + English support | **English only** (current build); Urdu/Roman-Urdu is future work |
+| Generic "fine-tuned medical LLM" | **BioMistral-7B, QLoRA fine-tuned on 10,000 samples** |
+| "RAG pipeline" (unspecified backend) | **Qdrant Cloud** vector store + corrective web-search fallback (SerpAPI) |
+| "PostgreSQL for persistent memory" | **Neon (managed Postgres Cloud)**, used for both LangGraph checkpoints and long-term memory `Store` |
+| "OCR for handwritten prescriptions" | **Groq-hosted Qwen VLM**, structured clinical-field extraction |
 
 ---
 
-## 🧠 Memory Evaluation
-
-```text
-Conversation A
-      │
-      ▼
-Save Patient Fact
-      │
-      ▼
-Conversation B
-      │
-      ▼
-Retrieve Patient Fact
-      │
-      ▼
-Use Relevant Context
-```
-
----
-
-## 📄 OCR Evaluation
-
-```text
-Medical Image
-      ↓
-OCR
-      ↓
-Extracted Text
-      ↓
-Agent
-      ↓
-Response
-```
-
----
-
-## ⚡ Latency Evaluation
-
-Compare:
-
-```text
-Original Architecture
-        VS
-Simplified Architecture
-```
-
-Measure:
-
-* End-to-end latency
-* OCR latency
-* Retrieval latency
-* LLM generation time
-* Total response time
-
----
-
-## 🔐 Authentication Evaluation
-
-```text
-Register
-   ↓
-Login
-   ↓
-JWT Access Token
-   ↓
-Authenticated Request
-   ↓
-Protected Endpoint
-```
-
-The SRS explicitly includes multilingual validation, memory save/fetch, OCR propagation, latency comparison, and authenticated-session testing.
-
----
-
-# 📊 FYP Architecture Diagrams
-
-The project documentation defines **seven major diagrams**.
-
-## 1️⃣ System Architecture
-
-Shows the complete four-layer architecture and communication between the application, agent, model, memory, and knowledge layers.
-
-## 2️⃣ DFD — Level 0
-
-Shows the system as a single process and its interaction with external entities and data stores.
-
-## 3️⃣ DFD — Level 1
-
-Decomposes the system into:
-
-```text
-1.0 Request Ingestion & OCR
-2.0 Authentication
-3.0 Agent / BioMistral
-4.0 Memory Handler
-5.0 RAG Handler
-6.0 Response Delivery
-```
-
-These processes and data stores are defined in the SRS.
-
-## 4️⃣ Use Case Diagram
-
-Main actor:
-
-```text
-Patient / User
-```
-
-Key use cases:
-
-```text
-Register
-Login
-Upload Medical Image
-Chat / Query Symptoms
-Receive Health Advice
-Retrieve Patient Facts
-Save Patient Facts
-Access Medical Knowledge
-View Conversation History
-```
-
-## 5️⃣ Activity Diagram
-
-Models the interaction between:
-
-```text
-User
-   ↕
-API Controller
-   ↕
-Agent Core
-```
-
-including OCR decisions and tool-call loops.
-
-## 6️⃣ Sequence Diagram
-
-Models the temporal interaction between:
-
-```text
-User
- ↓
-API Controller
- ↓
-LangGraph
- ↓
-BioMistral
- ↓
-Patient Memory
- ↓
-Qdrant
- ↓
-BioMistral
- ↓
-Final Response
-```
-
-## 7️⃣ ER Diagram
-
-Documents the relationship between:
-
-```text
-User
-ConversationThread
-PatientFact
-MedicalDocument
-```
-
----
-
-# 🏎️ Architecture Simplification
-
-A major engineering objective of this project is to **reduce unnecessary complexity**.
-
-### ❌ Previous Direction
-
-```text
-User
- ↓
-OCR Node
- ↓
-Translation
- ↓
-LLM
- ↓
-Translation
- ↓
-Grammar Validation
- ↓
-Corrective RAG
- ↓
-Response
-```
-
-### ✅ Proposed Direction
-
-```text
-User
- ↓
-FastAPI
- ↓
-Optional OCR
- ↓
-LangGraph
- ↓
-BioMistral
- ├── Memory Tool
- ├── RAG Tool
- └── Web Search Tool
- ↓
-Validated Response
-```
-
-The SRS identifies several specific simplifications:
-
-* Remove translation nodes.
-* Move OCR outside the graph.
-* Reduce oversized agent state.
-* Replace heavy grammar constraints.
-* Simplify corrective-RAG heuristics.
-* Simplify authentication for the academic prototype.
-
----
-
-# 🔬 Research Contribution
-
-This project combines multiple AI research areas into a single healthcare-oriented system:
-
-```text
-                 ┌───────────────────────┐
-                 │    Healthcare AI      │
-                 └───────────┬───────────┘
-                             │
-        ┌────────────────────┼────────────────────┐
-        │                    │                    │
-        ▼                    ▼                    ▼
-  Multilingual NLP      Medical LLM          Agentic AI
-        │                    │                    │
-        └────────────────────┼────────────────────┘
-                             │
-                             ▼
-                    Patient Memory
-                             │
-                             ▼
-                       Medical RAG
-                             │
-                             ▼
-                           OCR
-                             │
-                             ▼
-                   Personal Health AI
-```
-
-The primary research focus is **multilingual medical conversational AI for Urdu/English-speaking users**, particularly mixed-language and Roman-Urdu interactions.
-
----
-
-# 📈 Project Goals
-
-The project aims to achieve:
-
-| Goal                       | Description                                   |
-| -------------------------- | --------------------------------------------- |
-| 🇵🇰 **Localization**      | Support Pakistani communication patterns      |
-| 🧠 **Medical Adaptation**  | Use a medical-domain LLM                      |
-| 🤖 **Agentic Reasoning**   | Dynamically use tools                         |
-| 🧠 **Patient Awareness**   | Maintain persistent patient facts             |
-| 🔎 **Knowledge Grounding** | Retrieve relevant medical information         |
-| 📄 **Multimodal Input**    | Process medical images through OCR            |
-| ⚡ **Efficiency**           | Reduce unnecessary inference overhead         |
-| 🏗️ **Maintainability**    | Keep architecture understandable and testable |
-
----
-
-# 🚧 Limitations
-
-This is an academic research prototype and has important limitations.
-
-### 🧠 Model Limitations
-
-The model may:
-
-* Hallucinate information
-* Misinterpret symptoms
-* Produce incomplete responses
-* Fail on uncommon medical cases
-* Struggle with ambiguous Roman-Urdu expressions
-
-### 💻 Hardware Limitations
-
-Local inference performance depends on:
-
-```text
-CPU
-RAM
-Model quantization
-Context window
-Token generation speed
-```
-
-### 🏥 Clinical Limitations
-
-The system does not perform:
-
-```text
-Physical examination
-Laboratory diagnosis
-Clinical confirmation
-Emergency treatment
-Professional medical consultation
-```
-
----
-
-# 🗺️ Development Roadmap
-
-```text
-[x] FYP Proposal
-       │
-       ▼
-[x] SRS & System Design
-       │
-       ▼
-[x] Dataset Preparation
-       │
-       ▼
-[x] Medical LLM Fine-Tuning
-       │
-       ▼
-[x] Model Quantization
-       │
-       ▼
-[x] Backend Development
-       │
-       ▼
-[x] PostgreSQL Integration
-       │
-       ▼
-[x] Qdrant Integration
-       │
-       ▼
-[x] LangGraph Agent
-       │
-       ▼
-[ ] Architecture Simplification
-       │
-       ▼
-[ ] Multilingual Evaluation
-       │
-       ▼
-[ ] Patient Memory Evaluation
-       │
-       ▼
-[ ] OCR Evaluation
-       │
-       ▼
-[ ] End-to-End Testing
-       │
-       ▼
-[ ] Final FYP Deployment
-       │
-       ▼
-[ ] Final Report & Defense
-```
-
----
-
-# 📋 Functional Requirements
-
-The system is designed around six core functional requirements:
-
-### FR-01 — Symptom Elicitation
-
-Natural Urdu/English/Roman-Urdu conversation with relevant follow-up questions.
-
-### FR-02 — Multimodal Ingestion
-
-OCR extraction from prescriptions and medical reports.
-
-### FR-03 — Persistent Patient Memory
-
-Retrieval and storage of relevant patient facts.
-
-### FR-04 — Clinical Information Retrieval
-
-Access to medical knowledge through vector retrieval and optional web search.
-
-### FR-05 — Holistic Response Generation
-
-Structured guidance covering medical interpretation, medication, diet, exercise, and warnings.
-
-### FR-06 — Basic Authentication
-
-Authenticated sessions connecting users with their persistent patient information.
-
-These requirements are defined in the project's SRS.
-
----
-
-# ⚡ Non-Functional Requirements
-
-| Requirement         | Target                                          |
-| ------------------- | ----------------------------------------------- |
-| **Performance**     | Average response target under 5 seconds locally |
-| **Reliability**     | Graceful handling of external failures          |
-| **Maintainability** | Simple modular architecture                     |
-| **Language**        | Urdu + English + Roman Urdu                     |
-| **Memory**          | Persistent patient facts                        |
-| **Scalability**     | Modular backend and retrieval components        |
-
-The SRS specifies a target of less than five seconds average local response time and emphasizes reliability and maintainability.
-
----
-
-# 🧪 Verification Strategy
-
-The architecture will be verified through:
-
-```text
-┌──────────────────────────────┐
-│     Multilingual Tests       │
-└──────────────┬───────────────┘
-               │
-               ▼
-┌──────────────────────────────┐
-│      Memory Tests            │
-└──────────────┬───────────────┘
-               │
-               ▼
-┌──────────────────────────────┐
-│        OCR Tests             │
-└──────────────┬───────────────┘
-               │
-               ▼
-┌──────────────────────────────┐
-│      Latency Tests           │
-└──────────────┬───────────────┘
-               │
-               ▼
-┌──────────────────────────────┐
-│   Authentication Tests       │
-└──────────────┬───────────────┘
-               │
-               ▼
-┌──────────────────────────────┐
-│   End-to-End Evaluation      │
-└──────────────────────────────┘
-```
-
----
-
-# 🎓 Academic Context
-
-**Project Type:** Final Year Project
-
-**Degree:** BS Computer Science
-
-**Domain:** Artificial Intelligence / Healthcare
-
-**Primary Areas:**
-
-```text
-Artificial Intelligence
-Machine Learning
-Natural Language Processing
-Large Language Models
-Agentic AI
-Information Retrieval
-Healthcare AI
-Multimodal AI
-```
-
----
-
-# 👥 Team
-
-| Member            | Responsibility                              |
-| ----------------- | ------------------------------------------- |
-| **Asadullah**     | AI/ML, LLM Fine-Tuning, Agentic AI, Backend |
-| **[Team Member]** | [Responsibility]                            |
-| **[Team Member]** | [Responsibility]                            |
-
-### 👨‍🏫 Project Supervisor
-
-**[Supervisor Name]**
-
-**[Department / University]**
-
----
-
-# 🏆 Project Highlights
-
-<p align="center">
-
-| 🧠              | 🤖             | 🇵🇰        | 🔎              |
-| --------------- | -------------- | ----------- | --------------- |
-| **Medical LLM** | **Agentic AI** | **Urdu AI** | **Medical RAG** |
-
-| 📄      | 🧠                 | ⚡                   | 🏗️                  |
-| ------- | ------------------ | ------------------- | -------------------- |
-| **OCR** | **Patient Memory** | **Local Inference** | **FYP Architecture** |
-
-</p>
-
----
-
-# ⚠️ Medical Disclaimer
-
-> **This project is an academic and research prototype. It is NOT a medical diagnostic system and must NOT be used as a substitute for a qualified healthcare professional.**
-
-AI-generated information may be:
-
-* Incorrect
-* Incomplete
-* Outdated
-* Misinterpreted
-* Unsafe for certain clinical situations
-
-Always consult a qualified healthcare professional for diagnosis, treatment decisions, medication changes, or emergency situations.
-
----
-
-# 📄 License
-
-This project is developed primarily for **academic and research purposes**.
-
-Add an appropriate open-source license if this repository is intended for public distribution.
-
----
-
-<div align="center">
-
-## 🩺 Building AI That Understands How People Actually Talk About Their Health.
-
-### **AI-Powered Personal Health Intelligence Companion**
-
-**Understand • Remember • Retrieve • Reason • Assist**
-
-<br>
-
-⭐ If you find this project interesting, consider giving the repository a star.
-
-</div>
+## 15. Future Work
+
+- Urdu / Roman-Urdu language support (translation layer or multilingual fine-tune)
+- Voice input (speech-to-text) integration mentioned in the original proposal but not yet implemented
+- Expanded fine-tuning dataset beyond 10K samples, with continued RAG-vs-fine-tuned comparative evaluation
+- Doctor-facing dashboard / structured export of patient memory for real clinical handoff
+- Formal clinical validation and hallucination-rate benchmarking at scale

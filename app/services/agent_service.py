@@ -6,7 +6,9 @@ import psycopg
 from starlette.concurrency import run_in_threadpool
 
 from app.agent.graph import build_health_agent
+from app.db.pool import run_with_retry
 from app.schemas.agent import AgentRequest, AgentResponse
+from app.services.title_service import generate_thread_title
 from app.utils.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -50,6 +52,23 @@ def _build_initial_state(req: AgentRequest, ocr_text: str = "") -> dict:
     }
 
 
+def _is_new_thread(config: dict) -> bool:
+    """True when the thread has no message history yet (first turn).
+
+    Fail-open: if the check itself errors (e.g. the Neon wake race — the
+    same transient OperationalError the invoke loop below retries for),
+    assume the thread is NOT new. Skipping title generation is harmless;
+    re-titling an existing conversation is not.
+    """
+    try:
+        snapshot = run_with_retry(agent.get_state, config)
+        values = getattr(snapshot, "values", None) or {}
+        return not values.get("messages")
+    except Exception:
+        logger.warning("Thread state check failed — skipping title generation", exc_info=True)
+        return False
+
+
 # Neon autosuspends an idle compute and kills its connections. The pool
 # reconnects on checkout, but the *first* query on a fresh connection can
 # still abort while the compute is waking (the pool's ping races the wake).
@@ -89,6 +108,15 @@ async def run_agent(
         thread_id,
         "yes" if ocr_text else "no",
     )
+
+    # Sidebar title: generated once, on the thread's first turn, BEFORE the
+    # graph runs so it lands in the initial state — every checkpoint of the
+    # conversation then carries it in channel_values, which is where
+    # conversation_service reads it back from. Costs one extra LLM call on
+    # the first message only; subsequent turns skip this entirely.
+    if await run_in_threadpool(_is_new_thread, config):
+        initial_state["thread_title"] = await generate_thread_title(req.query)
+        logger.info("Thread titled | thread=%s | title=%s", thread_id, initial_state["thread_title"])
 
     for attempt in range(_MAX_DB_RETRIES + 1):
 

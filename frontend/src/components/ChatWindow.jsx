@@ -1,7 +1,7 @@
 import { useRef, useState, useEffect } from "react";
 import { useConversations } from "../context/ConversationsContext";
 import { api, getStreamUrl, getAuthHeaders } from "../utils/api";
-import { getSession } from "../utils/session";
+import { getSession, ensureFreshToken } from "../utils/session";
 import { API_BASE } from "../utils/config";
 import { fileToImageData } from "../utils/image";
 import { formatRelativeTime } from "../utils/time";
@@ -311,6 +311,10 @@ export default function ChatWindow({ onOpenSidebar }) {
 
   // Stream a completion from /chat/stream or /rag/stream (token-by-token).
   const streamChat = async (endpoint, history) => {
+    // This raw fetch bypasses authFetch's refresh-retry, so refresh the
+    // access token first — otherwise an expired token 401s the stream even
+    // though the refresh token in storage is still valid.
+    await ensureFreshToken();
     const res = await fetch(getStreamUrl(endpoint), {
       method: 'POST',
       headers: {

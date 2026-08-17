@@ -13,7 +13,14 @@ OCR text itself lives in this turn's state only.
 
 Memories are category-tagged (identity, symptom, medication, etc.) so
 downstream BioMistral can reason over structured patient history rather than
-an undifferentiated bullet list.
+an undifferentiated bullet list. Facts update in place via supersedes_id
+instead of piling up contradictions.
+
+Scaling (Phase 4): neither the extraction prompt nor the downstream context
+ever sees the full history dump. Identity facts always survive selection;
+everything else is recency-prefiltered, then ranked by semantic similarity
+to the turn's topic (user text + OCR) via the RAG embedder — falling back to
+plain recency when embeddings are unavailable.
 """
 import time
 import uuid
@@ -40,6 +47,14 @@ _memory_llm = ChatGroq(
 ).with_structured_output(MemoryDecision)
 
 MEMORY_NAMESPACE = "patient_memories"  # store namespace segment
+
+# Phase 4 scaling knobs:
+#   - hard ceiling on what one turn echoes into prompts, regardless of how
+#     much history the patient has accumulated
+#   - how many of the most recent non-identity memories are candidates for
+#     semantic ranking (bounds the embedder's work per turn)
+_EXTRACTION_PROMPT_CAP = 30
+_CANDIDATE_POOL = 60
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -74,6 +89,10 @@ def _load_existing_memories(patient_id: str) -> list[dict]:
             # are promoted to "identity" / "active".
             mem = {"text": str(data), "category": "identity", "status": "active"}
         mem["key"] = item.key
+        # Internal recency marker (never persisted) for Phase 4 selection.
+        mem["_ts"] = (
+            getattr(item, "updated_at", None) or getattr(item, "created_at", None)
+        )
         memories.append(mem)
     return memories
 
@@ -164,6 +183,93 @@ def _format_for_extraction(memories: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _sort_by_recency(memories: list[dict]) -> list[dict]:
+    """Oldest → newest.  Timestamped records (real PostgresStore items) sort
+    by updated_at/created_at; undated ones (test fakes) keep their relative
+    insertion order and land before the dated ones."""
+    def _ts(m: dict):
+        return m.get("_ts")
+
+    undated = [m for m in memories if _ts(m) is None]
+    dated = sorted((m for m in memories if _ts(m) is not None), key=_ts)
+    return undated + dated
+
+
+def _semantic_scores(pool: list[dict], topic: str) -> list[float] | None:
+    """Cosine similarity of each memory text against the turn's topic.
+
+    Returns None when embeddings can't be produced — empty topic, embedder
+    unavailable, or an all-zero topic vector (e.g. stubbed in tests) — so the
+    caller falls back to plain recency order.
+    """
+    if not topic:
+        return None
+    try:
+        import numpy as np
+
+        from app.core.rag.embedder import get_embedder
+
+        embedder = get_embedder()
+        topic_vec = np.asarray(embedder.encode(topic), dtype=float).ravel()
+        if not np.any(topic_vec):
+            return None
+        mat = np.asarray(
+            [
+                np.asarray(embedder.encode(m.get("text", "")), dtype=float).ravel()
+                for m in pool
+            ],
+            dtype=float,
+        )
+        denom = np.linalg.norm(mat, axis=1) * np.linalg.norm(topic_vec)
+        sims = np.where(denom > 0, mat.dot(topic_vec) / np.where(denom == 0, 1.0, denom), 0.0)
+        return [float(s) for s in sims]
+    except Exception:
+        logger.debug(
+            "Semantic memory ranking unavailable — falling back to recency",
+            exc_info=True,
+        )
+        return None
+
+
+def _select_memories(
+    memories: list[dict],
+    topic: str,
+    cap: int = _EXTRACTION_PROMPT_CAP,
+) -> list[dict]:
+    """Choose which memories this turn is allowed to see (Phase 4 fix).
+
+    Identity facts always survive selection — personalization needs the
+    patient's name even when the turn is off-topic.  Everything else is
+    recency-prefiltered to ``_CANDIDATE_POOL``, then ranked by semantic
+    similarity to the topic; the top ``cap`` minus identity survive.  With
+    embeddings unavailable, the most recent ``budget`` facts win instead.
+    """
+    if len(memories) <= cap:
+        return memories
+
+    identity = [m for m in memories if m.get("category") == "identity"]
+    others = [m for m in memories if m.get("category") != "identity"]
+    budget = max(cap - len(identity), 0)
+    if len(others) <= budget:
+        return identity + others
+
+    ordered = _sort_by_recency(others)
+    pool = ordered[-_CANDIDATE_POOL:]
+
+    scores = _semantic_scores(pool, topic)
+    if scores is None:
+        selected = pool[-budget:]
+    else:
+        # Highest similarity first; ties resolved toward the more recent
+        # fact (later index in the recency-ordered pool).
+        ranked = sorted(
+            zip(scores, range(len(pool)), pool),
+            key=lambda t: (-t[0], -t[1]),
+        )
+        selected = [m for _, _, m in ranked[:budget]]
+    return identity + selected
+
+
 def _mem_to_store_dict(mem: MemoryItem) -> dict:
     """Serialize a MemoryItem into the dict persisted by store.put."""
     return {
@@ -205,7 +311,9 @@ def _apply_supersession(patient_id: str, mem: MemoryItem) -> dict | None:
         store.put,
         _namespace(patient_id),
         mem.supersedes_id,
-        {"data": {k: v for k, v in updated.items() if k != "key"}},
+        # "key"/"_ts" are in-memory markers from _load_existing_memories —
+        # never persist them.
+        {"data": {k: v for k, v in updated.items() if k not in ("key", "_ts")}},
     )
     updated["key"] = mem.supersedes_id
     return updated
@@ -264,10 +372,17 @@ def remember_node(state: AgentState) -> dict:
         return {"remembered_context": "", "saved_memory": False}
 
     existing_memories = _load_existing_memories(patient_id)
-    existing_block = _format_existing(existing_memories)
 
     user_message = (state.get("raw_input") or "").strip()
     ocr_text = (state.get("ocr_context") or "").strip()
+
+    # Phase 4: bound what this turn echoes — identity always, plus recent
+    # facts ranked by similarity to the turn's topic (user text + OCR).
+    # Applies to both the extraction prompt and the downstream block, so a
+    # "hi" pays for a handful of facts, not the patient's entire history.
+    topic = f"{user_message}\n{ocr_text}".strip()
+    context_memories = _select_memories(existing_memories, topic)
+    existing_block = _format_existing(context_memories)
 
     # Build the OCR block for the extraction prompt when document text exists.
     if ocr_text:
@@ -290,7 +405,7 @@ def remember_node(state: AgentState) -> dict:
 
     system_msg = SystemMessage(
         content=REMEMBER_SYSTEM_PROMPT.format(
-            existing_memories=_format_for_extraction(existing_memories),
+            existing_memories=_format_for_extraction(context_memories),
             ocr_block=ocr_block,
         )
     )
@@ -312,7 +427,9 @@ def remember_node(state: AgentState) -> dict:
 
     # Working set for the final context block: superseded entries get
     # replaced in place, genuinely new facts appended — no second DB read.
-    all_memories = list(existing_memories)
+    # Seeded from the Phase 4 selection, so the downstream block stays
+    # bounded too.
+    all_memories = list(context_memories)
     changes = 0
     if decision.should_write:
         for mem in decision.memories:
@@ -338,7 +455,9 @@ def remember_node(state: AgentState) -> dict:
                     store.put,
                     _namespace(patient_id),
                     key,
-                    {"data": store_dict},
+                    # Persist a copy — store_dict gains in-memory markers
+                    # ("key") for the working set right after this.
+                    {"data": dict(store_dict)},
                 )
                 store_dict["key"] = key
                 all_memories.append(store_dict)

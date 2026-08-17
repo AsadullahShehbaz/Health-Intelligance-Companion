@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { api } from '../utils/api';
-import { getSession, setSession, clearSession } from '../utils/session';
+import { getSession, setSession, clearSession, getRefreshToken } from '../utils/session';
+import { API_BASE } from '../utils/config';
 
 const AuthContext = createContext(null);
 
@@ -15,8 +16,18 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
 
   const logout = useCallback(() => {
+    // Revoke the refresh token server-side (best-effort, fire-and-forget)
+    // so the stored session can't be replayed after sign-out.
+    const refreshToken = getRefreshToken();
     clearSession();
     setUser(null);
+    if (refreshToken) {
+      fetch(`${API_BASE}/auth/logout`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      }).catch(() => {});
+    }
   }, []);
 
   const verifySession = useCallback(async () => {
@@ -26,23 +37,37 @@ export function AuthProvider({ children }) {
       return;
     }
 
+    // The session itself lives in localStorage; /auth/me only confirms it's
+    // still valid server-side. A network failure (backend restarting, flaky
+    // connection) must NEVER clear it — a user who signed in once stays
+    // signed in until the refresh token truly expires or is revoked.
     try {
       const me = await api.get('/auth/me');
-      console.info('AuthProvider: verifySession got /auth/me', me);
       setUser(me);
+      setLoading(false);
+      return;
     } catch (err) {
       if (err.status === 401) {
-        // Already handled inside api.js (clears storage + fires event),
-        // but keep UI state in sync just in case.
+        // Real auth failure — refresh already failed inside api.js.
         logout();
-      } else {
-        // Network error / server restarting — keep cached session alive
-        // so the user isn't kicked out on a flaky connection.
-        console.warn('Auth check failed (network), keeping session');
+        setLoading(false);
+        return;
       }
-    } finally {
-      setLoading(false);
     }
+
+    // Network error — backend may just be starting up. Retry once before
+    // giving up; the cached session stays signed in either way.
+    console.warn('AuthProvider: backend unreachable during session check — retrying once');
+    setTimeout(() => {
+      api
+        .get('/auth/me')
+        .then((me) => setUser(me))
+        .catch((err) => {
+          if (err.status === 401) logout();
+          // Still unreachable — remain signed in on the cached session.
+        })
+        .finally(() => setLoading(false));
+    }, 2000);
   }, [logout]);
 
   useEffect(() => {
@@ -70,7 +95,7 @@ export function AuthProvider({ children }) {
     console.info('AuthProvider: login response', res);
     setSession({
       access_token: res.access_token,
-      refresh_token: res.refresh_token, // backend sends copy of access_token
+      refresh_token: res.refresh_token, // rotated opaque refresh token
     });
     const me = await api.get('/auth/me');
     console.info('AuthProvider: fetched /auth/me after login', me);

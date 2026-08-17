@@ -8,6 +8,29 @@ const TOKEN_EXPIRY_KEY = 'health_companion_token_expiry';
 // Default token expiry time (in minutes) — should match backend ACCESS_TOKEN_EXPIRE_MINUTES
 const ACCESS_TOKEN_EXPIRE_MINUTES = 60;
 
+// ---------------------------------------------------------------------------
+// Error kinds — callers MUST distinguish these:
+//   NetworkError     → server unreachable; the stored session may still be
+//                      perfectly valid and must NEVER be cleared.
+//   UnauthorizedError→ auth genuinely failed (refresh dead/revoked); the
+//                      session was already cleared when this is thrown.
+// ---------------------------------------------------------------------------
+export class NetworkError extends Error {
+  constructor(message = 'Cannot reach the server — check your connection.') {
+    super(message);
+    this.name = 'NetworkError';
+    this.isNetworkError = true;
+  }
+}
+
+export class UnauthorizedError extends Error {
+  constructor(message = 'Unauthorized') {
+    super(message);
+    this.name = 'UnauthorizedError';
+    this.isAuthFailure = true;
+  }
+}
+
 export const getSession = () => {
   try {
     const raw = localStorage.getItem(SESSION_KEY);
@@ -90,18 +113,25 @@ async function refreshAccessToken() {
   const refreshToken = getRefreshToken();
   if (!refreshToken) {
     onUnauthorized();
-    throw new Error('No refresh token available');
+    throw new UnauthorizedError('No refresh token available');
   }
 
-  const res = await fetch(`${API_BASE}/auth/refresh`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ refresh_token: refreshToken }),
-  });
+  let res;
+  try {
+    res = await fetch(`${API_BASE}/auth/refresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    });
+  } catch {
+    // Backend unreachable. The refresh token may still be valid — never
+    // clear the session over a transport failure.
+    throw new NetworkError();
+  }
 
   if (!res.ok) {
     onUnauthorized();
-    throw new Error(`Token refresh failed (HTTP ${res.status})`);
+    throw new UnauthorizedError(`Token refresh failed (HTTP ${res.status})`);
   }
 
   const data = await res.json();
@@ -164,15 +194,29 @@ export async function authFetch(path, options = {}) {
     });
   };
 
-  let res = await doFetch();
+  let res;
+  try {
+    res = await doFetch();
+  } catch {
+    // Transport failure (backend down / offline / CORS) — NOT an auth
+    // failure. Leave the stored session untouched.
+    throw new NetworkError();
+  }
 
   if (res.status === 401) {
     try {
       await refreshSession();
-    } catch {
-      throw new Error('Unauthorized');
+    } catch (err) {
+      // Refresh either genuinely failed (session already cleared) or the
+      // server was unreachable mid-refresh. Propagate the right kind so
+      // callers don't log users out over a network blip.
+      throw err instanceof NetworkError ? err : new UnauthorizedError();
     }
-    res = await doFetch(); // retry exactly once with the new token
+    try {
+      res = await doFetch(); // retry exactly once with the new token
+    } catch {
+      throw new NetworkError();
+    }
   }
 
   return res;

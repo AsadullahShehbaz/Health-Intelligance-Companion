@@ -10,12 +10,16 @@ export class ApiError extends Error {
 
 async function request(path, options = {}) {
   // authFetch handles proactive refresh, 401 refresh-and-retry, and
-  // session cleanup + auth:unauthorized dispatch when refresh fails
+  // session cleanup + auth:unauthorized dispatch when refresh fails.
   let res;
   try {
     res = await authFetch(path, options);
-  } catch {
-    throw new ApiError('Unauthorized', 401);
+  } catch (err) {
+    // authFetch throws exactly two kinds: real auth failure (session dead)
+    // and network failure (server unreachable). Only the first may look
+    // like a 401 — a network blip must never be treated as "signed out".
+    if (err?.isAuthFailure) throw new ApiError('Unauthorized', 401);
+    throw new ApiError(err?.message || 'Network error', 0);
   }
 
   if (res.status === 401) {
