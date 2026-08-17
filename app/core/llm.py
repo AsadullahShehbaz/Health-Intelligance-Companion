@@ -40,9 +40,9 @@ def validate_llm_connection() -> None:
 logger.info("Initializing LLM client (%s @ %s)", settings.LLM_MODEL, settings.LLM_BASE_URL)
 
 llm = ChatOpenAI(
-    base_url=settings.LLM_BASE_URL,
-    api_key=settings.LLM_API_KEY,
-    model=settings.LLM_MODEL,
+    base_url="https://api.groq.com/openai/v1",
+    api_key=settings.GROQ_API_KEY,
+    model="openai/gpt-oss-20b",
     timeout=600,
     max_retries=0,
 )
