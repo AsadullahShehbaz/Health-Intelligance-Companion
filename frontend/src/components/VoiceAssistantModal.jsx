@@ -1,18 +1,55 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { API_BASE } from "../utils/config";
 
+/**
+ * VoiceAssistantModal Component
+ * 
+ * An interactive, modal-based voice assistant interface featuring real-time HTML5 Canvas 
+ * audio visualizers, Speech-to-Text (STT), AI agent query execution, Text-to-Speech (TTS),
+ * adjustable playback controls, and automated voice-activity detection (barge-in/auto-interrupt).
+ */
 export default function VoiceAssistantModal({
   patientId,
   activeThreadId,
   onClose,
   onMessageSent,
 }) {
+  // ---------------------------------------------------------------------------
+  // STATE MANAGEMENT
+  // ---------------------------------------------------------------------------
+  
+  // Current modal operational state: 'idle' | 'recording' | 'processing' | 'speaking'
   const [status, setStatus] = useState("idle");
+  
+  // User's transcribed speech or fallback text input
   const [transcript, setTranscript] = useState("");
+  
+  // Response text returned from the AI agent endpoint
   const [agentResponse, setAgentResponse] = useState("");
+  
+  // Controls whether TTS audio output is muted
   const [muted, setMuted] = useState(false);
+  
+  // Captures microphone access or Speech-to-Text service error messages
   const [speechError, setSpeechError] = useState(null);
+  
+  // Speech playback speed rate (persisted in localStorage)
+  const [speechRate, setSpeechRate] = useState(() => {
+    const saved = localStorage.getItem("voice_speech_rate");
+    return saved ? parseFloat(saved) : 1;
+  });
+  
+  // Enables automatic interruption of TTS playback when user speaks over it (persisted in localStorage)
+  const [autoInterrupt, setAutoInterrupt] = useState(() => {
+    const saved = localStorage.getItem("voice_auto_interrupt");
+    return saved === "true";
+  });
 
+  // ---------------------------------------------------------------------------
+  // REFS & MUTABLE INSTANCES
+  // ---------------------------------------------------------------------------
+  
+  // DOM & Audio API Refs
   const canvasRef = useRef(null);
   const audioContextRef = useRef(null);
   const analyserRef = useRef(null);
@@ -20,15 +57,40 @@ export default function VoiceAssistantModal({
   const animationRef = useRef(null);
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
+  const audioRef = useRef(null);
+
+  // Operational & Sync Refs (avoid re-render closures in async loops / callbacks)
   const currentTranscriptRef = useRef("");
   const isSubmittingRef = useRef(false);
-  const audioRef = useRef(null);
   const statusRef = useRef("idle");
   const startTimeRef = useRef(null);
   const silenceStartRef = useRef(null);
   const recordingStartRef = useRef(null);
   const maxDurationTimeoutRef = useRef(null);
+  
+  // Barge-in (Auto-interrupt) VAD Refs
+  const bargeInRafRef = useRef(null);
+  const aboveThresholdStartRef = useRef(null);
+  const interruptedRef = useRef(false);
 
+  // Synchronized refs for fresh state access in requestAnimationFrame & event listeners
+  const autoInterruptRef = useRef(() => {
+    const saved = localStorage.getItem("voice_auto_interrupt");
+    return saved === "true";
+  });
+  const speechRateRef = useRef(() => {
+    const saved = localStorage.getItem("voice_speech_rate");
+    return saved ? parseFloat(saved) : 1;
+  });
+
+  // ---------------------------------------------------------------------------
+  // CLEANUP & UTILITIES
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Cleans up hardware resources, active audio contexts, animation loops, 
+   * timeouts, and active media recording streams.
+   */
   const cleanup = useCallback(() => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
       mediaRecorderRef.current.stop();
@@ -55,8 +117,16 @@ export default function VoiceAssistantModal({
       clearTimeout(maxDurationTimeoutRef.current);
       maxDurationTimeoutRef.current = null;
     }
+    if (bargeInRafRef.current) {
+      cancelAnimationFrame(bargeInRafRef.current);
+      bargeInRafRef.current = null;
+    }
+    aboveThresholdStartRef.current = null;
   }, []);
 
+  /**
+   * Helper function to render a radial glowing orb on the canvas context.
+   */
   const drawOrb = (ctx, x, y, radius, fill, glow) => {
     const innerRadius = Math.max(1, radius * 0.3);
     const outerRadius = Math.max(2, radius * 1.8);
@@ -74,6 +144,18 @@ export default function VoiceAssistantModal({
     ctx.fill();
   };
 
+  // ---------------------------------------------------------------------------
+  // CANVAS VISUALIZER LOOP
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Main render loop for the audio visualization sphere. Dynamically switches mode 
+   * based on `statusRef.current`:
+   * - Idle: Gentle breathing pulse.
+   * - Recording: Dynamic frequency-driven visual orb surrounded by reactive audio frequency bars.
+   * - Processing: Orbital spinning dots indicator.
+   * - Speaking: Pulsing concentric ripple waves.
+   */
   const drawVisualizer = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -94,10 +176,13 @@ export default function VoiceAssistantModal({
       const cx = w / 2;
       const cy = h / 2;
 
+      // 1. Idle Visualization Mode
       if (statusRef.current === "idle") {
         const pulse = Math.sin(elapsed * 1.5) * 0.3 + 0.7;
         const radius = 30 * pulse;
         drawOrb(ctx, cx, cy, radius, "rgba(107, 114, 128, 0.35)", "rgba(107, 114, 128, 0.08)");
+      
+      // 2. Recording Visualization Mode (Audio Frequency Spectrum Analysis)
       } else if (statusRef.current === "recording" && analyser && dataArray) {
         analyser.getByteFrequencyData(dataArray);
         let sum = 0;
@@ -105,6 +190,7 @@ export default function VoiceAssistantModal({
         const avg = sum / bufferLength;
         const radius = 30 + (avg / 255) * 55;
 
+        // Dynamic center orb based on average volume level
         drawOrb(
           ctx,
           cx,
@@ -114,6 +200,7 @@ export default function VoiceAssistantModal({
           "rgba(52, 211, 153, 0.12)"
         );
 
+        // Circular frequency spectrum equalizer bars
         const barCount = 48;
         const step = (Math.PI * 2) / barCount;
         for (let i = 0; i < barCount; i++) {
@@ -133,6 +220,8 @@ export default function VoiceAssistantModal({
           ctx.lineCap = "round";
           ctx.stroke();
         }
+      
+      // 3. Processing Visualization Mode (Rotating Orbit loader)
       } else if (statusRef.current === "processing") {
         const angle = elapsed * 3;
         const orbitRadius = 44;
@@ -151,6 +240,8 @@ export default function VoiceAssistantModal({
           ctx.fill();
         }
         ctx.restore();
+      
+      // 4. Speaking Visualization Mode (Expanding Ripple Animation)
       } else if (statusRef.current === "speaking") {
         const rippleCount = 3;
         for (let i = 0; i < rippleCount; i++) {
@@ -177,6 +268,13 @@ export default function VoiceAssistantModal({
     draw();
   }, []);
 
+  // ---------------------------------------------------------------------------
+  // AUDIO & QUERY HANDLERS
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Fetches TTS audio stream from backend and handles playback through HTML5 Audio API.
+   */
   const playTTS = useCallback(async (text) => {
     try {
       const response = await fetch(
@@ -188,6 +286,7 @@ export default function VoiceAssistantModal({
       const blob = await response.blob();
       const audioUrl = URL.createObjectURL(blob);
       const audio = new Audio(audioUrl);
+      audio.playbackRate = speechRateRef.current;
       audioRef.current = audio;
 
       audio.onended = () => {
@@ -207,8 +306,26 @@ export default function VoiceAssistantModal({
     }
   }, []);
 
+  /**
+   * Halts active TTS playback immediately (used for barge-in or manual stops).
+   */
+  const interruptPlayback = useCallback(() => {
+    interruptedRef.current = true;
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.src = "";
+      audioRef.current = null;
+    }
+    setStatus("idle");
+  }, []);
+
+  /**
+   * Sends transcribed or manual text query to backend Agent API, handles answer presentation,
+   * triggers message history callbacks, and invokes TTS playback if enabled.
+   */
   const submitVoiceQuery = useCallback(
     async (queryText) => {
+      interruptedRef.current = false;
       setStatus("processing");
       setTranscript(queryText);
       setSpeechError(null);
@@ -230,6 +347,7 @@ export default function VoiceAssistantModal({
         setAgentResponse(data.answer);
         setStatus("speaking");
 
+        // Notify parent application of user and assistant turn-taking
         if (onMessageSent) {
           onMessageSent(
             { role: "user", content: queryText },
@@ -237,7 +355,8 @@ export default function VoiceAssistantModal({
           );
         }
 
-        if (!muted) {
+        // Trigger TTS synthesized speech if not muted or interrupted
+        if (!muted && !interruptedRef.current) {
           await playTTS(data.answer);
         } else {
           setTimeout(() => setStatus("idle"), 1000);
@@ -252,6 +371,9 @@ export default function VoiceAssistantModal({
     [patientId, activeThreadId, muted, playTTS, onMessageSent]
   );
 
+  /**
+   * Stops active MediaRecorder recording stream.
+   */
   const stopRecording = useCallback(() => {
     if (
       mediaRecorderRef.current &&
@@ -265,6 +387,10 @@ export default function VoiceAssistantModal({
     }
   }, []);
 
+  /**
+   * Requests microphone access, configures Web Audio API analyzer node, starts media 
+   * recording chunk collection, sets auto-stop timer, and activates canvas visualizer.
+   */
   const startListening = useCallback(async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -272,6 +398,7 @@ export default function VoiceAssistantModal({
       });
       streamRef.current = stream;
 
+      // Initialize Web Audio API nodes for visualization and auto-interrupt detection
       const audioCtx = new (window.AudioContext ||
         window.webkitAudioContext)();
       audioContextRef.current = audioCtx;
@@ -283,6 +410,7 @@ export default function VoiceAssistantModal({
       const source = audioCtx.createMediaStreamSource(stream);
       source.connect(analyser);
 
+      // Setup MediaRecorder for capturing WebM audio blobs
       const mediaRecorder = new MediaRecorder(stream);
       mediaRecorderRef.current = mediaRecorder;
       audioChunksRef.current = [];
@@ -295,6 +423,7 @@ export default function VoiceAssistantModal({
         }
       };
 
+      // Process recorded audio blob once recording completes
       mediaRecorder.onstop = async () => {
         const blob = new Blob(audioChunksRef.current, { type: "audio/webm" });
         audioChunksRef.current = [];
@@ -309,6 +438,7 @@ export default function VoiceAssistantModal({
         formData.append("audio", blob, "recording.webm");
 
         try {
+          // Send WebM audio blob to backend Speech-to-Text endpoint
           const res = await fetch(`${API_BASE}/voice/stt`, {
             method: "POST",
             body: formData,
@@ -343,6 +473,7 @@ export default function VoiceAssistantModal({
       setStatus("recording");
       statusRef.current = "recording";
 
+      // Enforce a maximum continuous recording limit of 15 seconds
       maxDurationTimeoutRef.current = setTimeout(() => {
         stopRecording();
       }, 15000);
@@ -355,15 +486,106 @@ export default function VoiceAssistantModal({
     }
   }, [drawVisualizer, submitVoiceQuery, stopRecording]);
 
+  // ---------------------------------------------------------------------------
+  // REACT SIDE EFFECTS & LISTENERS
+  // ---------------------------------------------------------------------------
+
+  // Synchronize mutable status ref with React state
   useEffect(() => {
     statusRef.current = status;
   }, [status]);
 
+  // Cleanup component resources on unmount
   useEffect(() => {
     return () => {
       cleanup();
     };
   }, [cleanup]);
+
+  // Persist auto-interrupt preference changes to localStorage
+  useEffect(() => {
+    autoInterruptRef.current = autoInterrupt;
+    localStorage.setItem("voice_auto_interrupt", String(autoInterrupt));
+  }, [autoInterrupt]);
+
+  // Dynamically update active TTS audio element playback rate and persist setting
+  useEffect(() => {
+    if (audioRef.current) {
+      audioRef.current.playbackRate = speechRate;
+    }
+    speechRateRef.current = speechRate;
+    localStorage.setItem("voice_speech_rate", String(speechRate));
+  }, [speechRate]);
+
+  // Keyboard accessibility: Interruption on Space or Escape key press while agent speaks
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (status !== "speaking") return;
+      const activeEl = document.activeElement;
+      if (activeEl && (activeEl.tagName === "TEXTAREA" || activeEl.tagName === "INPUT")) return;
+      if (e.key === "Escape" || e.key === " ") {
+        e.preventDefault();
+        interruptPlayback();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [status, interruptPlayback]);
+
+  /**
+   * Barge-in VAD Loop: Analyzes microphone audio level during TTS playback ('speaking' status).
+   * If input volume stays above a defined threshold (> 30) for 300ms continuous duration, 
+   * automatically interrupts TTS playback and starts listening for user input.
+   */
+  useEffect(() => {
+    if (status !== "speaking" || !autoInterrupt) return;
+
+    const analyser = analyserRef.current;
+    if (!analyser) return;
+
+    const bufferLength = analyser.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+
+    const checkVolume = () => {
+      if (statusRef.current !== "speaking" || !autoInterruptRef.current) return;
+
+      analyser.getByteFrequencyData(dataArray);
+      let sum = 0;
+      for (let i = 0; i < bufferLength; i++) sum += dataArray[i];
+      const avg = sum / bufferLength;
+
+      // Speech detection volume threshold check
+      if (avg > 30) {
+        if (!aboveThresholdStartRef.current) {
+          aboveThresholdStartRef.current = Date.now();
+        } else if (Date.now() - aboveThresholdStartRef.current >= 300) {
+          // Continuous voice activity detected for 300ms -> Trigger barge-in interrupt
+          aboveThresholdStartRef.current = null;
+          interruptPlayback();
+          startListening();
+          return;
+        }
+      } else {
+        aboveThresholdStartRef.current = null;
+      }
+
+      bargeInRafRef.current = requestAnimationFrame(checkVolume);
+    };
+
+    bargeInRafRef.current = requestAnimationFrame(checkVolume);
+
+    return () => {
+      if (bargeInRafRef.current) {
+        cancelAnimationFrame(bargeInRafRef.current);
+        bargeInRafRef.current = null;
+      }
+      aboveThresholdStartRef.current = null;
+    };
+  }, [status, autoInterrupt, interruptPlayback, startListening]);
+
+  // ---------------------------------------------------------------------------
+  // INTERACTION HANDLERS
+  // ---------------------------------------------------------------------------
 
   const handleMuteToggle = () => {
     const nextMuted = !muted;
@@ -398,6 +620,9 @@ export default function VoiceAssistantModal({
     await submitVoiceQuery(text);
   };
 
+  /**
+   * Helper to resolve user-facing status label UI text.
+   */
   const getStatusLabel = () => {
     switch (status) {
       case "recording":
@@ -405,15 +630,25 @@ export default function VoiceAssistantModal({
       case "processing":
         return "Thinking...";
       case "speaking":
-        return "Speaking...";
+        return (
+          <>
+            <span>Speaking...</span>
+            <span className="mt-1 block text-xs text-gray-500">Tap to stop</span>
+          </>
+        );
       default:
         return "Tap to speak";
     }
   };
 
+  // ---------------------------------------------------------------------------
+  // RENDER UI
+  // ---------------------------------------------------------------------------
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm animate-fade-in">
       <div className="relative w-full max-w-lg mx-4 bg-[#1a1a1a] rounded-3xl border border-white/10 shadow-2xl overflow-hidden">
+        
+        {/* Close Modal Button */}
         <button
           onClick={handleClose}
           className="absolute top-4 right-4 z-10 p-2 rounded-full bg-white/5 hover:bg-white/10 text-gray-400 hover:text-gray-200 transition-colors"
@@ -434,21 +669,33 @@ export default function VoiceAssistantModal({
           </svg>
         </button>
 
+        {/* Audio Visualizer Canvas Container */}
         <div className="flex flex-col items-center justify-center pt-10 pb-4">
           <canvas
             ref={canvasRef}
             width={220}
             height={220}
-            className="rounded-full"
+            onClick={
+              status === "speaking" || status === "processing"
+                ? interruptPlayback
+                : undefined
+            }
+            className={`rounded-full transition-all ${
+              status === "speaking" || status === "processing"
+                ? "cursor-pointer hover:ring-2 hover:ring-emerald-400/50 hover:ring-offset-2 hover:ring-offset-[#1a1a1a] active:scale-95"
+                : ""
+            }`}
           />
         </div>
 
+        {/* Status Text Indicator */}
         <div className="text-center mb-3 px-6">
-          <p className="text-sm font-medium text-gray-300 uppercase tracking-widest">
+          <div className="text-sm font-medium text-gray-300 uppercase tracking-widest">
             {getStatusLabel()}
-          </p>
+          </div>
         </div>
 
+        {/* User Speech Transcript / Manual Fallback Input Area */}
         <div className="px-8 mb-5 min-h-[56px]">
           {speechError ? (
             <div className="text-center">
@@ -479,6 +726,7 @@ export default function VoiceAssistantModal({
           )}
         </div>
 
+        {/* Assistant Response Card */}
         {agentResponse && (
           <div className="px-8 mb-6">
             <div className="bg-white/5 rounded-2xl border border-white/10 p-4">
@@ -492,7 +740,10 @@ export default function VoiceAssistantModal({
           </div>
         )}
 
+        {/* Voice Assistant Controls Toolbar */}
         <div className="flex items-center justify-center gap-3 pb-8">
+          
+          {/* Mute/Unmute TTS Toggle */}
           <button
             onClick={handleMuteToggle}
             className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm transition-all ${
@@ -539,6 +790,42 @@ export default function VoiceAssistantModal({
             {muted ? "Unmute TTS" : "Mute TTS"}
           </button>
 
+          {/* Speech Rate Modifier Button */}
+          <button
+            onClick={() => {
+              const rates = [0.75, 1, 1.25, 1.5];
+              const idx = rates.indexOf(speechRate);
+              setSpeechRate(rates[(idx + 1) % rates.length]);
+            }}
+            className="px-3 py-1.5 rounded-xl bg-white/5 text-gray-300 border border-white/10 hover:bg-white/10 text-xs transition-all"
+            title="Playback speed (click to cycle)"
+          >
+            {speechRate}x
+          </button>
+
+          {/* Auto-Interrupt / Barge-in Feature Toggle */}
+          <button
+            onClick={() => setAutoInterrupt(!autoInterrupt)}
+            className={`px-3 py-1.5 rounded-xl text-xs transition-all flex items-center gap-1.5 ${
+              autoInterrupt
+                ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                : "bg-white/5 text-gray-400 border border-white/10 hover:bg-white/10"
+            }`}
+            title={
+              autoInterrupt
+                ? "Auto-interrupt: ON (speak over assistant)"
+                : "Auto-interrupt: OFF"
+            }
+          >
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${
+                autoInterrupt ? "bg-emerald-400" : "bg-gray-600"
+              }`}
+            />
+            Auto-interrupt
+          </button>
+
+          {/* Try Again (Restart Recording) Button */}
           {status === "idle" && (
             <button
               onClick={handleRetry}
@@ -561,6 +848,7 @@ export default function VoiceAssistantModal({
             </button>
           )}
 
+          {/* Send Button for Fallback Manual Text Entry */}
           {speechError && transcript.trim() && (
             <button
               onClick={handleFallbackSubmit}
