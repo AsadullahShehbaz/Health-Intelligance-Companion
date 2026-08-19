@@ -3,6 +3,13 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
+
+    # LangSmith Configs
+    LANGCHAIN_TRACING_V2: str = "true"
+    LANGCHAIN_API_KEY: str
+    LANGCHAIN_PROJECT: str = "default"
+
+
     # ── Database ──────────────────────────────────────────────────────────
     DATABASE_URL: str
     QDRANT_URL: str

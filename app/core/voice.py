@@ -9,6 +9,15 @@ from app.utils.logging_config import get_logger
 
 logger = get_logger(__name__)
 
+_playback_lock = asyncio.Lock()
+_is_playing = False 
+
+def stop_audio():
+    global _is_playing
+    sd.stop()
+    _is_playing = False
+    logger.info("Playback stopped by request.")
+     
 # Initialize recognizer instance
 _recognizer = sr.Recognizer()
 
@@ -34,6 +43,7 @@ async def tts_streaming_playback(speech: str, voice: str = "en-US-GuyNeural") ->
     Converts text to speech using Edge TTS, plays audio directly to local speakers,
     and returns raw MP3 bytes for potential network streaming.
     """
+    global _is_playing 
     if not speech.strip():
         return b""
 
@@ -46,17 +56,4 @@ async def tts_streaming_playback(speech: str, voice: str = "en-US-GuyNeural") ->
             buffer.write(chunk['data'])
     
     buffer.seek(0)
-    raw_audio_bytes = buffer.getvalue()
-    
-    # Decode MP3 bytes to numpy array for sounddevice execution
-    buffer.seek(0)
-    data, samplerate = sf.read(buffer)
-    
-    # Non-blocking async execution for sound playback
-    logger.info("Playing audio output via local sounddevice...")
-    sd.play(data, samplerate)
-    
-    # Keep execution non-blocking inside event loops
-    await asyncio.to_thread(sd.wait)
-    
-    return raw_audio_bytes
+    return buffer.getvalue()

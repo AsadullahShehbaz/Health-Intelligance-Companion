@@ -70,3 +70,6 @@ def rag_router_node(state: AgentState) -> dict:
 
     logger.info("ℹ Router determined query is purely conversational (no tools needed) → straight to BioMistral")
     return {"messages": [HumanMessage(content=current_user_text)]}
+
+
+router_node = rag_router_node

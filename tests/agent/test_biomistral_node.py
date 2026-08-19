@@ -8,7 +8,7 @@ Covers:
 - only the final AIMessage is stored (the user message is the router's job)
 """
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from app.agent.nodes.biomistral_node import _OCR_CHAR_LIMIT, biomistral_node
 
@@ -193,3 +193,129 @@ def test_biomistral_prompt_cross_references_symptoms_and_meds(fake_llm, sample_s
     assert "Fever" in system_text
     assert "Paracetamol" in system_text
     assert "MEDICATIONS" in system_text
+
+
+# ── conversation history injection ────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_biomistral_includes_prior_turns(fake_llm, sample_state):
+    """Prior Human/AI pairs should be passed to the local model so the reply
+    has conversational continuity."""
+    fake_llm.response_text = "answer"
+    fake_llm.tool_calls = None
+    captured = {}
+    orig = fake_llm.invoke
+
+    def _cap(messages):
+        captured["messages"] = messages
+        return orig(messages)
+
+    fake_llm.invoke = _cap
+
+    state = sample_state(
+        raw_input="What about the second option?",
+        messages=[
+            HumanMessage(content="I have a headache"),
+            AIMessage(content="You could take Paracetamol."),
+            HumanMessage(content="What about the second option?"),
+        ],
+    )
+    biomistral_node(state)
+
+    assert len(captured["messages"]) == 4
+    assert isinstance(captured["messages"][0], SystemMessage)
+    assert captured["messages"][1] == HumanMessage(content="I have a headache")
+    assert captured["messages"][2] == AIMessage(content="You could take Paracetamol.")
+    assert captured["messages"][3] == HumanMessage(content="What about the second option?")
+
+
+@pytest.mark.unit
+def test_biomistral_excludes_tool_messages(fake_llm, sample_state):
+    """ToolMessages and tool-calling AIMessages must not reach the plain
+    chat model (BioMistral has no tool schema)."""
+    fake_llm.response_text = "answer"
+    fake_llm.tool_calls = None
+    captured = {}
+    orig = fake_llm.invoke
+
+    def _cap(messages):
+        captured["messages"] = messages
+        return orig(messages)
+
+    fake_llm.invoke = _cap
+
+    tool_call_ai = AIMessage(
+        content="",
+        tool_calls=[{"name": "retrieve_medical_knowledge", "args": {"query": "fever"}, "id": "tc1"}],
+    )
+    tool_msg = ToolMessage(content="[who.int] Fever info", tool_call_id="tc1", name="retrieve_medical_knowledge")
+
+    state = sample_state(
+        raw_input="Tell me more",
+        messages=[
+            HumanMessage(content="I have a fever"),
+            tool_call_ai,
+            tool_msg,
+            AIMessage(content="Based on the search, fever is..."),
+        ],
+    )
+    biomistral_node(state)
+
+    assert len(captured["messages"]) == 4
+    assert captured["messages"][1] == HumanMessage(content="I have a fever")
+    assert captured["messages"][2] == AIMessage(content="Based on the search, fever is...")
+    assert captured["messages"][3] == HumanMessage(content="Tell me more")
+    assert not any(getattr(m, "tool_calls", None) for m in captured["messages"])
+    assert not any(isinstance(m, ToolMessage) for m in captured["messages"])
+
+
+@pytest.mark.unit
+def test_biomistral_caps_history_length(fake_llm, sample_state):
+    """Very long histories are capped so the local model's context window
+    is not overflowed."""
+    from app.agent.nodes.biomistral_node import _CHAT_HISTORY_TURN_CAP
+
+    fake_llm.response_text = "answer"
+    fake_llm.tool_calls = None
+    captured = {}
+    orig = fake_llm.invoke
+
+    def _cap(messages):
+        captured["messages"] = messages
+        return orig(messages)
+
+    fake_llm.invoke = _cap
+
+    long_history = []
+    for i in range(30):
+        long_history.append(HumanMessage(content=f"q{i}"))
+        long_history.append(AIMessage(content=f"a{i}"))
+
+    state = sample_state(raw_input="latest", messages=long_history)
+    biomistral_node(state)
+
+    assert len(captured["messages"]) == _CHAT_HISTORY_TURN_CAP * 2 + 2
+    assert captured["messages"][-2] == AIMessage(content="a29")
+    assert captured["messages"][-1] == HumanMessage(content="latest")
+
+
+@pytest.mark.unit
+def test_biomistral_no_history_first_turn(fake_llm, sample_state):
+    """Empty messages list still works on the first turn."""
+    fake_llm.response_text = "Hello! How can I help?"
+    fake_llm.tool_calls = None
+    captured = {}
+    orig = fake_llm.invoke
+
+    def _cap(messages):
+        captured["messages"] = messages
+        return orig(messages)
+
+    fake_llm.invoke = _cap
+
+    state = sample_state(raw_input="Hello", messages=[])
+    biomistral_node(state)
+
+    assert len(captured["messages"]) == 2
+    assert isinstance(captured["messages"][0], SystemMessage)
+    assert captured["messages"][1] == HumanMessage(content="Hello")

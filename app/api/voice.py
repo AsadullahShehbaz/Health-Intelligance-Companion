@@ -6,9 +6,14 @@ from app.deps import get_current_user
 from app.models.user import User
 from app.services.voice_service import process_voice_turn, transcribe_audio
 from app.schemas.agent import AgentRequest
-from app.core.voice import tts_streaming_playback
+from app.core.voice import tts_streaming_playback,stop_audio
 
 router = APIRouter(prefix="/voice", tags=["Voice"])
+
+@router.post("/stop")
+def voice_stop():
+    stop_audio()
+    return {"status": "stopped"}
 
 
 @router.post("/interact")
@@ -68,3 +73,4 @@ async def speech_to_text(request: Request):
         raise
     except Exception:
         raise HTTPException(status_code=500, detail="Speech recognition failed")
+

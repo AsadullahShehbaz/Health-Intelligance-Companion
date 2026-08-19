@@ -1,3 +1,4 @@
+// srs/components/VoiceAssistantModal.jsx
 import { useState, useEffect, useRef, useCallback } from "react";
 import { API_BASE } from "../utils/config";
 
@@ -32,6 +33,11 @@ export default function VoiceAssistantModal({
   
   // Captures microphone access or Speech-to-Text service error messages
   const [speechError, setSpeechError] = useState(null);
+  
+  // Interaction mode: "voiceChat" (STT → LLM → TTS) vs "voiceInput" (STT → LLM → text only)
+  const [mode, setMode] = useState(() => {
+    return localStorage.getItem("voice_mode") || "voiceChat";
+  });
   
   // Speech playback speed rate (persisted in localStorage)
   const [speechRate, setSpeechRate] = useState(() => {
@@ -122,6 +128,7 @@ export default function VoiceAssistantModal({
       bargeInRafRef.current = null;
     }
     aboveThresholdStartRef.current = null;
+    fetch(`${API_BASE}/voice/stop`, { method: "POST" }).catch(() => {});
   }, []);
 
   /**
@@ -309,15 +316,16 @@ export default function VoiceAssistantModal({
   /**
    * Halts active TTS playback immediately (used for barge-in or manual stops).
    */
-  const interruptPlayback = useCallback(() => {
-    interruptedRef.current = true;
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current.src = "";
-      audioRef.current = null;
-    }
-    setStatus("idle");
-  }, []);
+ const interruptPlayback = useCallback(() => {
+  interruptedRef.current = true;
+  if (audioRef.current) {
+    audioRef.current.pause();
+    audioRef.current.src = "";
+    audioRef.current = null;
+  }
+  setStatus("idle");
+  fetch(`${API_BASE}/voice/stop`, { method: "POST" }).catch(() => {});
+}, []);
 
   /**
    * Sends transcribed or manual text query to backend Agent API, handles answer presentation,
@@ -345,7 +353,6 @@ export default function VoiceAssistantModal({
 
         const data = await res.json();
         setAgentResponse(data.answer);
-        setStatus("speaking");
 
         // Notify parent application of user and assistant turn-taking
         if (onMessageSent) {
@@ -355,11 +362,18 @@ export default function VoiceAssistantModal({
           );
         }
 
-        // Trigger TTS synthesized speech if not muted or interrupted
-        if (!muted && !interruptedRef.current) {
-          await playTTS(data.answer);
+        // Voice Input mode: text-only, skip TTS entirely
+        if (mode === "voiceInput") {
+          setStatus("idle");
         } else {
-          setTimeout(() => setStatus("idle"), 1000);
+          setStatus("speaking");
+
+          // Trigger TTS synthesized speech if not muted or interrupted
+          if (!muted && !interruptedRef.current) {
+            await playTTS(data.answer);
+          } else {
+            setTimeout(() => setStatus("idle"), 1000);
+          }
         }
       } catch (err) {
         console.error("Voice query error:", err);
@@ -368,7 +382,7 @@ export default function VoiceAssistantModal({
         isSubmittingRef.current = false;
       }
     },
-    [patientId, activeThreadId, muted, playTTS, onMessageSent]
+    [patientId, activeThreadId, muted, mode, playTTS, onMessageSent]
   );
 
   /**
@@ -489,11 +503,22 @@ export default function VoiceAssistantModal({
   // ---------------------------------------------------------------------------
   // REACT SIDE EFFECTS & LISTENERS
   // ---------------------------------------------------------------------------
-
+  useEffect(() => {
+  const stopOnUnload = () => {
+    navigator.sendBeacon(`${API_BASE}/voice/stop`);
+  };
+  window.addEventListener("pagehide", stopOnUnload);
+  return () => window.removeEventListener("pagehide", stopOnUnload);
+}, []);
   // Synchronize mutable status ref with React state
   useEffect(() => {
     statusRef.current = status;
   }, [status]);
+
+  // Persist mode preference to localStorage
+  useEffect(() => {
+    localStorage.setItem("voice_mode", mode);
+  }, [mode]);
 
   // Cleanup component resources on unmount
   useEffect(() => {
@@ -588,15 +613,16 @@ export default function VoiceAssistantModal({
   // ---------------------------------------------------------------------------
 
   const handleMuteToggle = () => {
-    const nextMuted = !muted;
-    setMuted(nextMuted);
-    if (nextMuted && audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current.src = "";
-      audioRef.current = null;
-      setStatus("idle");
-    }
-  };
+  const nextMuted = !muted;
+  setMuted(nextMuted);
+  if (nextMuted && audioRef.current) {
+    audioRef.current.pause();
+    audioRef.current.src = "";
+    audioRef.current = null;
+    setStatus("idle");
+    fetch(`${API_BASE}/voice/stop`, { method: "POST" }).catch(() => {});
+  }
+};
 
   const handleClose = () => {
     setSpeechError(null);
@@ -668,6 +694,34 @@ export default function VoiceAssistantModal({
             />
           </svg>
         </button>
+
+        {/* Mode Toggle (Voice Chat / Voice Input) */}
+        {status === "idle" && (
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1 p-1 bg-[#2f2f2f] rounded-xl border border-white/10">
+            <button
+              onClick={() => setMode("voiceChat")}
+              disabled={status !== "idle"}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                mode === "voiceChat"
+                  ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                  : "text-gray-400 border border-transparent hover:text-gray-200 hover:bg-white/5"
+              }`}
+            >
+              Voice Chat
+            </button>
+            <button
+              onClick={() => setMode("voiceInput")}
+              disabled={status !== "idle"}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                mode === "voiceInput"
+                  ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                  : "text-gray-400 border border-transparent hover:text-gray-200 hover:bg-white/5"
+              }`}
+            >
+              Voice Input
+            </button>
+          </div>
+        )}
 
         {/* Audio Visualizer Canvas Container */}
         <div className="flex flex-col items-center justify-center pt-10 pb-4">
@@ -743,87 +797,104 @@ export default function VoiceAssistantModal({
         {/* Voice Assistant Controls Toolbar */}
         <div className="flex items-center justify-center gap-3 pb-8">
           
-          {/* Mute/Unmute TTS Toggle */}
-          <button
-            onClick={handleMuteToggle}
-            className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm transition-all ${
-              muted
-                ? "bg-red-500/20 text-red-300 border border-red-500/30"
-                : "bg-white/5 text-gray-400 border border-white/10 hover:bg-white/10"
-            }`}
-          >
-            {muted ? (
-              <svg
-                className="w-4 h-4"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z"
-                />
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2"
-                />
-              </svg>
-            ) : (
-              <svg
-                className="w-4 h-4"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z"
-                />
-              </svg>
-            )}
-            {muted ? "Unmute TTS" : "Mute TTS"}
-          </button>
-
-          {/* Speech Rate Modifier Button */}
-          <button
-            onClick={() => {
-              const rates = [0.75, 1, 1.25, 1.5];
-              const idx = rates.indexOf(speechRate);
-              setSpeechRate(rates[(idx + 1) % rates.length]);
-            }}
-            className="px-3 py-1.5 rounded-xl bg-white/5 text-gray-300 border border-white/10 hover:bg-white/10 text-xs transition-all"
-            title="Playback speed (click to cycle)"
-          >
-            {speechRate}x
-          </button>
-
-          {/* Auto-Interrupt / Barge-in Feature Toggle */}
-          <button
-            onClick={() => setAutoInterrupt(!autoInterrupt)}
-            className={`px-3 py-1.5 rounded-xl text-xs transition-all flex items-center gap-1.5 ${
-              autoInterrupt
-                ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
-                : "bg-white/5 text-gray-400 border border-white/10 hover:bg-white/10"
-            }`}
-            title={
-              autoInterrupt
-                ? "Auto-interrupt: ON (speak over assistant)"
-                : "Auto-interrupt: OFF"
-            }
-          >
-            <span
-              className={`w-1.5 h-1.5 rounded-full ${
-                autoInterrupt ? "bg-emerald-400" : "bg-gray-600"
+          {/* Mute/Unmute TTS Toggle (hidden in Voice Input mode — no audio plays) */}
+          {mode === "voiceChat" && (
+            <>
+            <button
+              onClick={handleMuteToggle}
+              className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm transition-all ${
+                muted
+                  ? "bg-red-500/20 text-red-300 border border-red-500/30"
+                  : "bg-white/5 text-gray-400 border border-white/10 hover:bg-white/10"
               }`}
-            />
-            Auto-interrupt
-          </button>
+            >
+              {muted ? (
+                <svg
+                  className="w-4 h-4"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z"
+                  />
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2"
+                  />
+                </svg>
+              ) : (
+                <svg
+                  className="w-4 h-4"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z"
+                  />
+                </svg>
+              )}
+              {muted ? "Unmute TTS" : "Mute TTS"}
+            </button>
+
+            {/* Speech Rate Modifier Button */}
+            <button
+              onClick={() => {
+                const rates = [0.75, 1, 1.25, 1.5];
+                const idx = rates.indexOf(speechRate);
+                setSpeechRate(rates[(idx + 1) % rates.length]);
+              }}
+              className="px-3 py-1.5 rounded-xl bg-white/5 text-gray-300 border border-white/10 hover:bg-white/10 text-xs transition-all"
+              title="Playback speed (click to cycle)"
+            >
+              {speechRate}x
+            </button>
+
+            {/* Auto-Interrupt / Barge-in Feature Toggle */}
+            <button
+              onClick={() => setAutoInterrupt(!autoInterrupt)}
+              className={`px-3 py-1.5 rounded-xl text-xs transition-all flex items-center gap-1.5 ${
+                autoInterrupt
+                  ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                  : "bg-white/5 text-gray-400 border border-white/10 hover:bg-white/10"
+              }`}
+              title={
+                autoInterrupt
+                  ? "Auto-interrupt: ON (speak over assistant)"
+                  : "Auto-interrupt: OFF"
+              }
+            >
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${
+                  autoInterrupt ? "bg-emerald-400" : "bg-gray-600"
+                }`}
+              />
+              Auto-interrupt
+            </button>
+            </>
+          )}
+
+          {/* Stop Playback Button */}
+          {status === "speaking" && (
+            <button
+              onClick={interruptPlayback}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-red-500/20 text-red-300 border border-red-500/30 hover:bg-red-500/30 text-sm transition-all"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 7.5A2.25 2.25 0 017.5 5.25h9a2.25 2.25 0 012.25 2.25v9a2.25 2.25 0 01-2.25 2.25h-9a2.25 2.25 0 01-2.25-2.25v-9z" />
+              </svg>
+              Stop
+            </button>
+          )}
 
           {/* Try Again (Restart Recording) Button */}
           {status === "idle" && (

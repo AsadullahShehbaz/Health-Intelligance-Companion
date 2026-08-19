@@ -130,3 +130,31 @@ def test_router_empty_history_appends_input(fake_llm, sample_state):
 
     assert isinstance(captured["last"], HumanMessage)
     assert captured["last"].content == "first message"
+
+
+# ── identical consecutive messages ────────────────────────────────────────────
+
+@pytest.mark.unit
+def test_router_dedup_identical_consecutive_messages(fake_llm, sample_state):
+    """If the user sends the exact same text twice in a row, the router's
+    content-only dedup check skips appending the second HumanMessage.
+    This is a known limitation (not the reported continuity bug)."""
+    fake_llm.tool_calls = None
+    captured = {}
+    orig_invoke = fake_llm.invoke
+
+    def _capture(messages):
+        captured["messages"] = list(messages)
+        return orig_invoke(messages)
+
+    fake_llm.invoke = _capture
+
+    state = sample_state(
+        raw_input="hello",
+        messages=[HumanMessage(content="hello")],
+    )
+    router_node(state)
+
+    human_messages = [m for m in captured["messages"] if isinstance(m, HumanMessage)]
+    assert len(human_messages) == 1
+    assert human_messages[-1].content == "hello"

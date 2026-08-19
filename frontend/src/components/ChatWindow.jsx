@@ -6,6 +6,7 @@ import { API_BASE } from "../utils/config";
 import { fileToImageData } from "../utils/image";
 import { formatRelativeTime } from "../utils/time";
 import VoiceAssistantModal from "./VoiceAssistantModal";
+import ChatVoiceInput from "./ChatVoiceInput";
 
 // ─── Markdown Renderer ─────────────────────────────────────────
 
@@ -273,14 +274,6 @@ function HamburgerIcon() {
   );
 }
 
-function MicIcon() {
-  return (
-    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z" />
-    </svg>
-  );
-}
-
 // ─── Main Component ─────────────────────────────────────────────
 
 export default function ChatWindow({ onOpenSidebar }) {
@@ -377,7 +370,7 @@ export default function ChatWindow({ onOpenSidebar }) {
 
   const sendMessage = async (overrideText) => {
     const text = overrideText !== undefined ? overrideText : input;
-    if (!text.trim() || busy) return;
+    if (!text.trim() || busy) return null;
 
     const userMsg = { role: "user", content: text };
     if (image) userMsg.imageDataUrl = image.dataUrl;
@@ -394,9 +387,11 @@ export default function ChatWindow({ onOpenSidebar }) {
         const assistantMsg = await runAgent(text, attachedImage);
         setMessages([...history, assistantMsg]);
         refreshList();
+        return assistantMsg;
       } else {
         const endpoint = mode === "rag" ? "/rag/stream" : "/chat/stream";
         await streamChat(endpoint, history);
+        return null;
       }
     } catch (err) {
       console.error("Chat error:", err);
@@ -612,13 +607,26 @@ export default function ChatWindow({ onOpenSidebar }) {
               className="flex-1 bg-transparent text-gray-100 placeholder-gray-600 resize-none outline-none px-3 py-3.5 text-sm leading-relaxed max-h-[200px] scrollbar-thin"
             />
             <div className="flex items-center px-3 pb-3.5 gap-2">
+              <ChatVoiceInput onSendMessage={sendMessage} disabled={busy} />
               <button
                 onClick={() => setShowVoice(true)}
                 disabled={busy}
                 className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-gray-400 hover:text-emerald-300 border border-white/10 transition-all duration-200 disabled:opacity-40"
-                title="Voice input"
+                title="Full voice chat (visualizer + barge-in)"
               >
-                <MicIcon />
+                <svg
+                  className="w-5 h-5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={1.8}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z"
+                  />
+                </svg>
               </button>
               <button
                 onClick={() => sendMessage()}
@@ -626,7 +634,11 @@ export default function ChatWindow({ onOpenSidebar }) {
                 className="w-8 h-8 rounded-xl bg-white text-gray-900 flex items-center justify-center disabled:opacity-20 disabled:cursor-not-allowed hover:bg-gray-200 transition-all duration-200 active:scale-95"
                 title="Send"
               >
-                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                <svg
+                  className="w-4 h-4"
+                  fill="currentColor"
+                  viewBox="0 0 24 24"
+                >
                   <path d="M3.478 2.404a.75.75 0 00-.926.941l2.432 7.905H13.5a.75.75 0 010 1.5H4.984l-2.432 7.905a.75.75 0 00.926.94 60.519 60.519 0 0018.445-8.986.75.75 0 000-1.218A60.517 60.517 0 003.478 2.404z" />
                 </svg>
               </button>

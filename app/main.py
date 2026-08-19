@@ -10,6 +10,15 @@ from app.db.lifespan import lifespan as db_lifespan
 from app.db.session import init_models
 from app.utils.logging_config import get_logger
 
+import os
+
+# Export settings to system environment for LangChain/LangSmith
+os.environ["LANGCHAIN_TRACING_V2"] = settings.LANGCHAIN_TRACING_V2
+os.environ["LANGCHAIN_API_KEY"] = settings.LANGCHAIN_API_KEY
+os.environ["LANGCHAIN_PROJECT"] = settings.LANGCHAIN_PROJECT
+
+# Import/Run your chains and workflows AFTER setting os.environ
+
 logger = get_logger(__name__)
 
 

@@ -22,6 +22,10 @@ logger = get_logger(__name__)
 # blow its context window.
 _OCR_CHAR_LIMIT = 2000
 
+# Cap how many prior Human/AI turns we feed the local model so a long
+# thread doesn't blow the GGUF context window.
+_CHAT_HISTORY_TURN_CAP = 10
+
 
 def biomistral_node(state: AgentState) -> dict:
     logger.info("▶ Chat Node Started")
@@ -40,14 +44,23 @@ def biomistral_node(state: AgentState) -> dict:
 
     user_question = (state.get("raw_input") or "").strip()
 
-    # Single clean inference turn: system prompt (with gathered context) +
-    # the user's raw input only. The router already persisted the user
-    # message, so here we store just the final AIMessage — completing the
-    # conversation pair without re-inserting the HumanMessage.
-    messages = [
-        SystemMessage(content=formatted_system),
-        HumanMessage(content=user_question),
+    messages = [SystemMessage(content=formatted_system)]
+
+    prior_messages = state.get("messages", [])
+    chat_history = [
+        m for m in prior_messages
+        if isinstance(m, HumanMessage)
+        or (isinstance(m, AIMessage) and not getattr(m, "tool_calls", None))
     ]
+
+    max_history = _CHAT_HISTORY_TURN_CAP * 2
+    if len(chat_history) > max_history:
+        chat_history = chat_history[-max_history:]
+
+    messages.extend(chat_history)
+
+    if not messages or not isinstance(messages[-1], HumanMessage) or messages[-1].content != user_question:
+        messages.append(HumanMessage(content=user_question))
 
     logger.info(
         "Chat (BioMistral) invoked with %d messages | patient=%s",

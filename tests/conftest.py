@@ -149,7 +149,10 @@ def fake_llm(monkeypatch):
         "app.services.rag_chat_service",
         "app.agent.nodes.biomistral_node",
     ]:
-        mod = importlib.import_module(mod_path)
+        try:
+            mod = importlib.import_module(mod_path)
+        except ImportError:
+            continue
         monkeypatch.setattr(mod, "llm", fake)
 
     # The router uses its own bound ChatGroq instance — swap it for the fake

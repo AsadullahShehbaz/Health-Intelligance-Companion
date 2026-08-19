@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import { ConversationsProvider } from "./context/ConversationsContext";
 import Navbar from "./components/Navbar";
@@ -10,6 +10,18 @@ import "./App.css";
 function AppContent() {
   const [showLogin, setShowLogin] = useState(false);
   const [showRegister, setShowRegister] = useState(false);
+
+  useEffect(() => {
+    const handlePageHide = () => {
+      try {
+        navigator.sendBeacon("http://localhost:8000/voice/stop");
+      } catch {
+        // ignore beacon errors
+      }
+    };
+    window.addEventListener("pagehide", handlePageHide);
+    return () => window.removeEventListener("pagehide", handlePageHide);
+  }, []);
 
   return (
     <>
