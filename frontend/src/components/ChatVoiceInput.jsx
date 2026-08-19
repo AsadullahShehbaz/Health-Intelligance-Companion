@@ -340,15 +340,7 @@ export default function ChatVoiceInput({ onSendMessage, disabled }) {
         </button>
       )}
 
-      {isSpeaking && (
-    <button
-      onClick={stopTTS}
-      className="p-1.5 rounded-lg text-red-300 bg-red-500/20 border border-red-500/30 hover:bg-red-500/30 transition-colors"
-      title="Stop speaking"
-    >
-      <CancelIcon />
-    </button>
-  )}
+    
       <button
         onClick={toggleTTS}
         className={`p-1.5 rounded-lg border text-xs transition-colors ${
