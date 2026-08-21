@@ -1,5 +1,147 @@
 # Codebase Context
 
+## Project Structure
+
+```text
+.
+├── app
+│   ├── agent
+│   │   ├── nodes
+│   │   │   ├── biomistral_node.py
+│   │   │   ├── prompts.py
+│   │   │   ├── remember_node.py
+│   │   │   └── router_node.py
+│   │   ├── graph.py
+│   │   ├── memory_schema.py
+│   │   ├── state.py
+│   │   └── tools.py
+│   ├── api
+│   │   ├── __init__.py
+│   │   ├── agent.py
+│   │   ├── auth.py
+│   │   ├── chat.py
+│   │   ├── memory.py
+│   │   └── voice.py
+│   ├── core
+│   │   ├── rag
+│   │   │   ├── embedder.py
+│   │   │   ├── ocr.py
+│   │   │   ├── qdrant_store.py
+│   │   │   └── rag_tool.py
+│   │   ├── llm.py
+│   │   ├── password_policy.py
+│   │   ├── security.py
+│   │   └── voice.py
+│   ├── db
+│   │   ├── base.py
+│   │   ├── lifespan.py
+│   │   ├── pool.py
+│   │   └── session.py
+│   ├── models
+│   │   ├── __init__.py
+│   │   ├── refresh_token.py
+│   │   ├── token.py
+│   │   └── user.py
+│   ├── schemas
+│   │   ├── __init__.py
+│   │   ├── agent.py
+│   │   ├── auth.py
+│   │   ├── chat.py
+│   │   └── memory.py
+│   ├── services
+│   │   ├── agent_service.py
+│   │   ├── chat_service.py
+│   │   ├── conversation_service.py
+│   │   ├── memory_service.py
+│   │   ├── title_service.py
+│   │   └── voice_service.py
+│   ├── tests
+│   │   ├── conftest.py
+│   │   ├── test-ocr.py
+│   │   ├── test_auth.py
+│   │   ├── test_chat.py
+│   │   ├── test_qdrant.py
+│   │   ├── test_remember_node.py
+│   │   └── test_week6_agent.py
+│   ├── utils
+│   │   ├── __init__.py
+│   │   ├── email.py
+│   │   └── logging_config.py
+│   ├── __init__.py
+│   ├── config.py
+│   ├── deps.py
+│   └── main.py
+├── frontend
+│   ├── dist
+│   │   ├── assets
+│   │   │   ├── index-CBHO7c2P.js
+│   │   │   └── index-zWuo-qb0.css
+│   │   └── index.html
+│   ├── public
+│   ├── src
+│   │   ├── assets
+│   │   ├── components
+│   │   │   ├── ChatBox.jsx
+│   │   │   ├── ChatVoiceInput.jsx
+│   │   │   ├── ChatWindow.jsx
+│   │   │   ├── ConversationItem.jsx
+│   │   │   ├── LoginModal.jsx
+│   │   │   ├── MemoryDashboard.jsx
+│   │   │   ├── Navbar.jsx
+│   │   │   ├── RegisterModal.jsx
+│   │   │   ├── Sidebar.jsx
+│   │   │   └── VoiceAssistantModal.jsx
+│   │   ├── context
+│   │   │   ├── AuthContext.jsx
+│   │   │   └── ConversationsContext.jsx
+│   │   ├── utils
+│   │   │   ├── api.js
+│   │   │   ├── config.js
+│   │   │   ├── image.js
+│   │   │   ├── session.js
+│   │   │   └── time.js
+│   │   ├── App.css
+│   │   ├── App.jsx
+│   │   ├── index.css
+│   │   └── main.jsx
+│   ├── eslint.config.js
+│   ├── index.html
+│   ├── package-lock.json
+│   ├── package.json
+│   └── vite.config.js
+├── tests
+│   ├── agent
+│   │   ├── test_biomistral_node.py
+│   │   ├── test_graph.py
+│   │   ├── test_router_node.py
+│   │   └── test_tools.py
+│   ├── api
+│   │   └── test_memory.py
+│   ├── core
+│   │   ├── test_email.py
+│   │   ├── test_ocr.py
+│   │   ├── test_password_policy.py
+│   │   ├── test_schemas.py
+│   │   └── test_security.py
+│   ├── db
+│   │   └── test_pool.py
+│   ├── services
+│   │   ├── test_agent_service.py
+│   │   ├── test_chat_service.py
+│   │   ├── test_conversation_service.py
+│   │   ├── test_title_service.py
+│   │   └── test_voice_service.py
+│   └── conftest.py
+├── contextBuilder.py
+├── pyproject.toml
+├── pytest.ini
+└── requirements.txt
+```
+
+---
+
+## Source Code
+
 ## File: `contextBuilder.py`
 
 ```python
@@ -10,7 +152,7 @@ OUTPUT_FILE = "codebase_context.md"
 
 # Directories to skip
 EXCLUDE_DIRS = {
-    "__pycache__", 
+    "__pycache__",
     ".git",
     ".vscode",
     ".claude",
@@ -21,8 +163,7 @@ EXCLUDE_DIRS = {
     "llama.cpp",
     "gradio-app",
     "notebooks",
-    "docs"
-    
+    "docs",
 }
 
 # Files or extensions to skip
@@ -32,7 +173,7 @@ EXCLUDE_FILES = {
     "logs.txt",
     ".DS_Store",
     ".gitignore",
-    "results_raw.json"
+    "results_raw.json",
 }
 
 EXCLUDE_EXTENSIONS = {
@@ -48,22 +189,111 @@ EXCLUDE_EXTENSIONS = {
     ".gz",
     ".sqlite3",
     ".db",
-    ".md"
+    ".md",
 }
 
 
 def is_text_file(filename):
-    """Check if file has a binary extension."""
+    """Check if file has a binary/excluded extension."""
     _, ext = os.path.splitext(filename)
     return ext.lower() not in EXCLUDE_EXTENSIONS
 
 
+def get_project_structure(root_dir="."):
+    """
+    Generate a tree-style representation of the project structure.
+
+    Only includes directories and files that are not excluded.
+    """
+    structure = []
+
+    def walk_directory(current_dir, prefix=""):
+        try:
+            entries = os.listdir(current_dir)
+        except OSError:
+            return
+
+        # Filter excluded directories/files
+        filtered_entries = []
+
+        for entry in entries:
+            full_path = os.path.join(current_dir, entry)
+
+            # Skip hidden files/directories
+            if entry.startswith("."):
+                continue
+
+            if os.path.isdir(full_path):
+                if entry in EXCLUDE_DIRS:
+                    continue
+            else:
+                if entry in EXCLUDE_FILES:
+                    continue
+
+                if not is_text_file(entry):
+                    continue
+
+            filtered_entries.append(entry)
+
+        # Sort directories first, then files
+        filtered_entries.sort(
+            key=lambda x: (
+                not os.path.isdir(os.path.join(current_dir, x)),
+                x.lower(),
+            )
+        )
+
+        for index, entry in enumerate(filtered_entries):
+            full_path = os.path.join(current_dir, entry)
+
+            is_last = index == len(filtered_entries) - 1
+
+            connector = "└── " if is_last else "├── "
+            structure.append(f"{prefix}{connector}{entry}")
+
+            if os.path.isdir(full_path):
+                new_prefix = prefix + ("    " if is_last else "│   ")
+                walk_directory(full_path, new_prefix)
+
+    # Start from root
+    structure.append(".")
+    walk_directory(root_dir)
+
+    return "\n".join(structure)
+
+
 def generate_markdown_context(root_dir="."):
     count = 0
+
     with open(OUTPUT_FILE, "w", encoding="utf-8") as out_file:
+
+        # ============================================================
+        # PROJECT HEADER
+        # ============================================================
+
         out_file.write("# Codebase Context\n\n")
 
+        # ============================================================
+        # PROJECT STRUCTURE
+        # ============================================================
+
+        out_file.write("## Project Structure\n\n")
+        out_file.write("```text\n")
+
+        structure = get_project_structure(root_dir)
+        out_file.write(structure)
+
+        out_file.write("\n```\n\n")
+        out_file.write("---\n\n")
+
+        # ============================================================
+        # SOURCE CODE
+        # ============================================================
+
+        out_file.write("## Source Code\n\n")
+
         for dirpath, dirnames, filenames in os.walk(root_dir):
+
             # Modify dirnames in-place to skip excluded directories
             dirnames[:] = [
                 d
@@ -71,7 +301,8 @@ def generate_markdown_context(root_dir="."):
                 if d not in EXCLUDE_DIRS and not d.startswith(".")
             ]
 
-            for filename in filenames:
+            for filename in sorted(filenames):
+
                 if filename in EXCLUDE_FILES or not is_text_file(filename):
                     continue
 
@@ -80,410 +311,67 @@ def generate_markdown_context(root_dir="."):
 
                 # Infer code block language from file extension
                 ext = os.path.splitext(filename)[1].lstrip(".")
+
                 lang_map = {
                     "py": "python",
                     "js": "javascript",
+                    "jsx": "javascript",
                     "ts": "typescript",
+                    "tsx": "typescript",
                     "json": "json",
-                    "md": "markdown",
                     "html": "html",
                     "css": "css",
+                    "scss": "scss",
                     "sh": "bash",
                     "yml": "yaml",
                     "yaml": "yaml",
                     "txt": "text",
+                    "sql": "sql",
+                    "java": "java",
+                    "kt": "kotlin",
+                    "dart": "dart",
+                    "go": "go",
+                    "rs": "rust",
+                    "cpp": "cpp",
+                    "c": "c",
                 }
+
                 lang = lang_map.get(ext, "")
 
                 try:
                     with open(full_path, "r", encoding="utf-8") as f:
                         content = f.read()
 
-                    out_file.write(f"## File: `{relative_path}`\n\n")
+                    out_file.write(
+                        f"## File: `{relative_path}`\n\n"
+                    )
+
                     out_file.write(f"```{lang}\n")
                     out_file.write(content)
-                    out_file.write("\n```\n\n")
+
+                    if not content.endswith("\n"):
+                        out_file.write("\n")
+
+                    out_file.write("```\n\n")
                     out_file.write("---\n\n")
 
                     count += 1
                     print(f"Added: {relative_path}")
+
                 except Exception as e:
-                    print(f"Skipped {relative_path} (Error reading file: {e})")
+                    print(
+                        f"Skipped {relative_path} "
+                        f"(Error reading file: {e})"
+                    )
 
     print(
-        f"\nDone! Processed {count} files and saved to `{OUTPUT_FILE}`."
+        f"\nDone! Processed {count} files "
+        f"and saved to `{OUTPUT_FILE}`."
     )
 
 
 if __name__ == "__main__":
     generate_markdown_context()
-```
-
----
-
-## File: `index.html`
-
-```html
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>React For AI Engineers - Intro</title>
-    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;500;700;900&family=Fira+Code:wght@500&display=swap" rel="stylesheet">
-    <style>
-        :root {
-            --bg-color: #0B0F19;
-            --react-blue: #61DAFB;
-            --ai-purple: #BC13FE;
-            --text-white: #FFFFFF;
-            --box-bg: rgba(255, 255, 255, 0.05);
-            --border-color: rgba(255, 255, 255, 0.1);
-        }
-
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        body {
-            background-color: var(--bg-color);
-            color: var(--text-white);
-            font-family: 'Poppins', sans-serif;
-            overflow: hidden;
-            height: 100vh;
-            width: 100vw;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            position: relative;
-        }
-
-        /* Animated Background Glow */
-        body::before {
-            content: '';
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            width: 800px;
-            height: 800px;
-            background: radial-gradient(circle, rgba(97, 218, 251, 0.1) 0%, rgba(11, 15, 25, 0) 70%);
-            transform: translate(-50%, -50%);
-            z-index: 0;
-            animation: pulseGlow 4s ease-in-out infinite;
-        }
-
-        body::after {
-            content: '';
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            width: 600px;
-            height: 600px;
-            background: radial-gradient(circle, rgba(188, 19, 254, 0.1) 0%, rgba(11, 15, 25, 0) 70%);
-            transform: translate(-50%, -50%);
-            z-index: 0;
-            animation: pulseGlow 4s ease-in-out infinite 2s;
-        }
-
-        @keyframes pulseGlow {
-            0%, 100% { transform: translate(-50%, -50%) scale(1); opacity: 0.5; }
-            50% { transform: translate(-50%, -50%) scale(1.2); opacity: 0.8; }
-        }
-
-        /* Slide Container */
-        #intro-container {
-            position: relative;
-            width: 100%;
-            height: 100%;
-            z-index: 10;
-        }
-
-        .slide {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
-            opacity: 0;
-            pointer-events: none;
-            transition: opacity 0.8s ease-in-out;
-        }
-
-        .slide.active {
-            opacity: 1;
-            pointer-events: auto;
-        }
-
-        /* Slide 1: Title */
-        #slide1 .sub-title {
-            font-size: 1.5rem;
-            color: var(--react-blue);
-            letter-spacing: 4px;
-            text-transform: uppercase;
-            margin-bottom: 10px;
-            opacity: 0;
-            transform: translateY(20px);
-            animation: fadeUp 0.8s forwards 0.2s;
-        }
-
-        #slide1 .main-title {
-            font-size: 5rem;
-            font-weight: 900;
-            text-align: center;
-            line-height: 1.1;
-            background: linear-gradient(90deg, var(--text-white), var(--react-blue));
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            opacity: 0;
-            transform: translateY(40px);
-            filter: blur(10px);
-            animation: blurIn 1s forwards 0.5s;
-        }
-
-        #slide1 .target-audience {
-            margin-top: 20px;
-            font-size: 1.2rem;
-            color: var(--ai-purple);
-            font-weight: 700;
-            border-bottom: 2px solid var(--ai-purple);
-            padding-bottom: 5px;
-            opacity: 0;
-            transform: translateY(20px);
-            animation: fadeUp 0.8s forwards 1.2s;
-        }
-
-        @keyframes blurIn {
-            to { opacity: 1; transform: translateY(0); filter: blur(0); }
-        }
-
-        @keyframes fadeUp {
-            to { opacity: 1; transform: translateY(0); }
-        }
-
-        /* Slide 2: 12 Topics */
-        #slide2 h2 {
-            font-size: 2rem;
-            margin-bottom: 40px;
-            opacity: 0;
-            transform: translateY(-20px);
-        }
-
-        .topics-grid {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 15px;
-            width: 85%;
-            max-width: 1100px;
-        }
-
-        .topic-box {
-            background: var(--box-bg);
-            border: 1px solid var(--border-color);
-            padding: 20px 15px;
-            border-radius: 8px;
-            text-align: center;
-            font-family: 'Fira Code', monospace;
-            font-size: 0.85rem; 
-            color: #d0d0d0;
-            opacity: 0;
-            transform: scale(0.8) translateY(20px);
-            transition: all 0.3s ease;
-            backdrop-filter: blur(5px);
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
-            min-height: 90px; /* Increased slightly for longer text */
-            line-height: 1.3;
-        }
-
-        .topic-box span.lecture-num {
-            display: block;
-            font-size: 0.7rem;
-            color: var(--react-blue);
-            margin-bottom: 8px;
-            font-weight: bold;
-            letter-spacing: 1px;
-        }
-
-        /* Animation for boxes */
-        .slide.active .topic-box {
-            animation: popIn 0.5s forwards;
-        }
-
-        @keyframes popIn {
-            to { opacity: 1; transform: scale(1) translateY(0); }
-        }
-
-        /* Slide 3: Project */
-        #slide3 .project-label {
-            font-size: 1rem;
-            color: var(--react-blue);
-            text-transform: uppercase;
-            letter-spacing: 3px;
-            margin-bottom: 20px;
-            opacity: 0;
-            transform: translateY(20px);
-        }
-
-        #slide3 .project-title {
-            font-size: 3.5rem;
-            font-weight: 700;
-            text-align: center;
-            background: linear-gradient(90deg, var(--react-blue), var(--ai-purple));
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            opacity: 0;
-            transform: scale(0.9);
-            filter: blur(5px);
-        }
-
-        .slide.active #slide3-label { animation: fadeUp 0.6s forwards 0.2s; }
-        .slide.active #slide3-title { animation: blurIn 0.8s forwards 0.5s; }
-
-        /* Slide 4: Outro */
-        #slide4 h1 {
-            font-size: 4rem;
-            font-weight: 900;
-            opacity: 0;
-            transform: scale(1.2);
-            color: var(--text-white);
-            text-shadow: 0 0 20px rgba(97, 218, 251, 0.5);
-        }
-
-        .slide.active #slide4-text {
-            animation: zoomOut 0.8s forwards;
-        }
-
-        @keyframes zoomOut {
-            to { opacity: 1; transform: scale(1); }
-        }
-
-        /* Progress Bar (Video Editor Feel) */
-        #progress-bar {
-            position: absolute;
-            bottom: 0;
-            left: 0;
-            height: 4px;
-            width: 0%;
-            background: linear-gradient(90deg, var(--react-blue), var(--ai-purple));
-            box-shadow: 0 0 10px var(--react-blue);
-            z-index: 100;
-        }
-
-        /* Responsive */
-        @media (max-width: 768px) {
-            #slide1 .main-title { font-size: 3rem; }
-            .topics-grid { grid-template-columns: repeat(3, 1fr); }
-            #slide3 .project-title { font-size: 2rem; }
-            .topic-box { font-size: 0.75rem; padding: 15px 5px; }
-        }
-    </style>
-</head>
-<body>
-
-    <div id="intro-container">
-        <!-- Slide 1: Title -->
-        <div class="slide active" id="slide1">
-            <div class="sub-title">Complete Crash Course</div>
-            <div class="main-title">React For<br>AI Engineers</div>
-            <div class="target-audience">in One Video</div>
-        </div>
-
-        <!-- Slide 2: 12 Topics -->
-        <div class="slide" id="slide2">
-            <h2>12 Core Lectures Covered</h2>
-            <div class="topics-grid">
-                <div class="topic-box"><span class="lecture-num">Lecture 01</span> Intro to React</div>
-                <div class="topic-box"><span class="lecture-num">Lecture 2</span> Components and Props</div>
-                <div class="topic-box"><span class="lecture-num">Lecture 3</span> State and Hooks</div>
-                <div class="topic-box"><span class="lecture-num">Lecture 4</span> useEffect Hook</div>
-                <div class="topic-box"><span class="lecture-num">Lecture 5</span> useRef Hook</div>
-                <div class="topic-box"><span class="lecture-num">Lecture 6</span> Conditional Rendering & List Mapping</div>
-                <div class="topic-box"><span class="lecture-num">Lecture 7</span> Event Handling in React</div>
-                <div class="topic-box"><span class="lecture-num">Lecture 8</span> React Routing</div>
-                <div class="topic-box"><span class="lecture-num">Lecture 9</span> useContext Hook</div>
-                <div class="topic-box"><span class="lecture-num">Lecture 10</span> useMemo Hook</div>
-                <div class="topic-box"><span class="lecture-num">Lecture 11</span> useCallback Hook</div>
-                <div class="topic-box"><span class="lecture-num">Lecture 12</span> Form Handling</div>
-            </div>
-        </div>
-
-        <!-- Slide 3: Project -->
-        <div class="slide" id="slide3">
-            <div class="project-label" id="slide3-label">Hands-on React Project</div>
-            <div class="project-title" id="slide3-title">Free Image<br>Generation App</div>
-        </div>
-
-        <!-- Slide 4: Outro -->
-        <div class="slide" id="slide4">
-            <h1 id="slide4-text">Let's Build!</h1>
-        </div>
-    </div>
-
-    <div id="progress-bar"></div>
-
-    <script>
-        // Array of slide IDs
-        const slides = document.querySelectorAll('.slide');
-        const progressBar = document.getElementById('progress-bar');
-        
-        // Timings for each slide (in milliseconds)
-        const slideDurations = [3000, 5500, 3000, 2000]; 
-        
-        // Stagger animation delays for topic boxes
-        const topicBoxes = document.querySelectorAll('.topic-box');
-        topicBoxes.forEach((box, index) => {
-            // Each box appears 0.12s after the previous one
-            box.style.animationDelay = `${0.2 + (index * 0.12)}s`;
-        });
-
-        let currentSlide = 0;
-        const totalIntroTime = slideDurations.reduce((a, b) => a + b, 0);
-
-        function showSlide(index) {
-            slides.forEach(slide => slide.classList.remove('active'));
-            slides[index].classList.add('active');
-        }
-
-        function nextSlide() {
-            currentSlide++;
-            if (currentSlide < slides.length) {
-                showSlide(currentSlide);
-                setTimeout(nextSlide, slideDurations[currentSlide]);
-            } else {
-                console.log("Intro finished");
-            }
-        }
-
-        // Progress bar animation
-        function animateProgress() {
-            let elapsed = 0;
-            const interval = 50; 
-            
-            const timer = setInterval(() => {
-                elapsed += interval;
-                let progress = (elapsed / totalIntroTime) * 100;
-                if (progress >= 100) {
-                    progress = 100;
-                    clearInterval(timer);
-                }
-                progressBar.style.width = progress + '%';
-            }, interval);
-        }
-
-        // Start the sequence
-        animateProgress();
-        setTimeout(nextSlide, slideDurations[0]);
-    </script>
-</body>
-</html>
 ```
 
 ---
@@ -501,7 +389,6 @@ omit = [
 [tool.coverage.report]
 show_missing = true
 skip_covered = false
-
 ```
 
 ---
@@ -518,7 +405,6 @@ markers =
     live: requires real external services (Postgres, Qdrant, LLM); skipped unless RUN_LIVE_TESTS=1
 filterwarnings =
     ignore::DeprecationWarning
-
 ```
 
 ---
@@ -720,6 +606,13 @@ websockets==15.0.1
 xxhash==3.8.1
 yarl==1.24.5
 zstandard==0.25.0
+```
+
+---
+
+## File: `app\__init__.py`
+
+```python
 
 ```
 
@@ -731,14 +624,12 @@ zstandard==0.25.0
 from pydantic import ConfigDict
 from pydantic_settings import BaseSettings
 
-
 class Settings(BaseSettings):
 
     # LangSmith Configs
-    LANGCHAIN_TRACING_V2: str = "true"
+    LANGCHAIN_TRACING_V2: str = "True"
     LANGCHAIN_API_KEY: str
-    LANGCHAIN_PROJECT: str = "default"
-
+    LANGCHAIN_PROJECT: str 
 
     # ── Database ──────────────────────────────────────────────────────────
     DATABASE_URL: str
@@ -755,10 +646,10 @@ class Settings(BaseSettings):
     VERIFY_TOKEN_EXPIRE_HOURS: int = 48            # email-verify token TTL
 
     # ── Model & CORS (sensible dev defaults) ──────────────────────────────
-    LLM_MODEL: str = r"C:\Users\jason\.cache\models\biomistral-Q4_K_M.gguf"
-    LLM_BASE_URL: str = "http://127.0.0.1:8080/v1"
-    LLM_API_KEY: str = "api-key"
-    CORS_ORIGINS: list[str] = ["http://localhost:5173"]
+    LLM_MODEL: str 
+    LLM_BASE_URL: str
+    LLM_API_KEY: str 
+    CORS_ORIGINS: list[str] 
 
     # ── Email / SMTP (leave unset for dev — emails are logged to console) ─
     SMTP_HOST: str = ""
@@ -775,7 +666,6 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
-
 ```
 
 ---
@@ -851,7 +741,6 @@ def require_role(*allowed_roles: str):
     return checker
 
 
-
 ```
 
 ---
@@ -865,7 +754,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.rag.embedder import get_embedder
-from app.api import auth, chat, agent,voice
+from app.api import auth, chat, agent, voice, memory
 from app.config import settings
 from app.db.lifespan import lifespan as db_lifespan
 from app.db.session import init_models
@@ -939,18 +828,11 @@ app.include_router(auth.router)
 app.include_router(chat.router)
 app.include_router(agent.router)   
 app.include_router(voice.router)
+app.include_router(memory.router)
 
 @app.get("/")
 async def root():
     return {"message": "API Running"}
-```
-
----
-
-## File: `app\__init__.py`
-
-```python
-
 ```
 
 ---
@@ -1109,7 +991,6 @@ def build_health_agent():
 
     logger.info("✓ Health agent graph compiled (remember → rag_router → tools? → chat → END)")
     return compiled
-
 ```
 
 ---
@@ -1179,7 +1060,6 @@ class MemoryDecision(BaseModel):
         default_factory=list,
         description="Atomic memories extracted from the user's latest message",
     )
-
 ```
 
 ---
@@ -1218,7 +1098,6 @@ class AgentState(TypedDict):
     # that split without touching conversation_service.py.
     answer: str
     final_response: str
-
 ```
 
 ---
@@ -1307,7 +1186,6 @@ TOOLS = [
 ## File: `app\agent\nodes\biomistral_node.py`
 
 ```python
-# app/agent/nodes/biomistral_node.py
 """Node 3 — Chat.
 
 Receives the raw user input along with any plain-text context the RAG/router's
@@ -1317,11 +1195,12 @@ router, this node does a single clean inference turn with no JSON or
 function-calling overhead.
 """
 import time
+from typing import List
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
-from app.agent.state import AgentState
 from app.agent.nodes.prompts import BIOMISTRAL_PROMPT
+from app.agent.state import AgentState
 from app.core.llm import llm
 from app.utils.logging_config import get_logger
 
@@ -1334,6 +1213,56 @@ _OCR_CHAR_LIMIT = 2000
 # Cap how many prior Human/AI turns we feed the local model so a long
 # thread doesn't blow the GGUF context window.
 _CHAT_HISTORY_TURN_CAP = 10
+
+
+def _clean_and_alternate_messages(messages: List[BaseMessage]) -> List[BaseMessage]:
+    """Ensures strict role alternation (System -> Human -> AI -> Human...) required by
+
+    Mistral/BioMistral Jinja templates. Merges consecutive messages of the same type.
+    """
+    if not messages:
+        return []
+
+    # Separate system messages from conversational history
+    system_msgs = [m for m in messages if isinstance(m, SystemMessage)]
+    conv_msgs = [m for m in messages if isinstance(m, (HumanMessage, AIMessage))]
+
+    if not conv_msgs:
+        return system_msgs
+
+    # Merge consecutive messages of the exact same role (e.g., Human + Human)
+    merged_conv: List[BaseMessage] = []
+    for msg in conv_msgs:
+        if not merged_conv:
+            merged_conv.append(msg)
+            continue
+
+        prev_msg = merged_conv[-1]
+
+        # Check if current and previous messages share the same role
+        if type(msg) is type(prev_msg):
+            prev_text = prev_msg.content if isinstance(prev_msg.content, str) else str(prev_msg.content)
+            curr_text = msg.content if isinstance(msg.content, str) else str(msg.content)
+            
+            # Combine content if it's not duplicate text
+            if curr_text and curr_text not in prev_text:
+                combined_text = f"{prev_text}\n\n{curr_text}".strip()
+            else:
+                combined_text = prev_text
+
+            if isinstance(prev_msg, HumanMessage):
+                merged_conv[-1] = HumanMessage(content=combined_text)
+            elif isinstance(prev_msg, AIMessage):
+                merged_conv[-1] = AIMessage(content=combined_text)
+        else:
+            merged_conv.append(msg)
+
+    # Mistral requires the conversation sequence to start with a HumanMessage after system prompt
+    if merged_conv and isinstance(merged_conv[0], AIMessage):
+        merged_conv.pop(0)
+
+    # Reconstruct final list: SystemMessage first, followed by strict alternating chat sequence
+    return system_msgs + merged_conv
 
 
 def biomistral_node(state: AgentState) -> dict:
@@ -1353,7 +1282,7 @@ def biomistral_node(state: AgentState) -> dict:
 
     user_question = (state.get("raw_input") or "").strip()
 
-    messages = [SystemMessage(content=formatted_system)]
+    messages: List[BaseMessage] = [SystemMessage(content=formatted_system)]
 
     prior_messages = state.get("messages", [])
     chat_history = [
@@ -1368,19 +1297,24 @@ def biomistral_node(state: AgentState) -> dict:
 
     messages.extend(chat_history)
 
+    # Append current question if it isn't already the last human message
     if not messages or not isinstance(messages[-1], HumanMessage) or messages[-1].content != user_question:
-        messages.append(HumanMessage(content=user_question))
+        if user_question:
+            messages.append(HumanMessage(content=user_question))
+
+    # Clean and merge message sequence to prevent Jinja role template errors
+    clean_messages = _clean_and_alternate_messages(messages)
 
     logger.info(
         "Chat (BioMistral) invoked with %d messages | patient=%s",
-        len(messages),
+        len(clean_messages),
         state["patient_id"],
     )
 
-    logger.info(f"BioMistral invoked with messages: {messages}")
+    logger.info("BioMistral invoked with messages: %s", str(clean_messages)[:200])
 
     start = time.monotonic()
-    response = llm.invoke(messages)
+    response = llm.invoke(clean_messages)
     logger.info("✓ BioMistral completed in %.2fs", time.monotonic() - start)
 
     answer_text = (response.content or "").strip()
@@ -1404,7 +1338,6 @@ def biomistral_node(state: AgentState) -> dict:
         "final_response": answer_text,
         "messages": [response],
     }
-
 ```
 
 ---
@@ -1947,7 +1880,6 @@ def remember_node(state: AgentState) -> dict:
         "remembered_context": _format_existing(all_memories),
         "saved_memory": changes > 0,
     }
-
 ```
 
 ---
@@ -2030,6 +1962,13 @@ def rag_router_node(state: AgentState) -> dict:
 
 
 router_node = rag_router_node
+```
+
+---
+
+## File: `app\api\__init__.py`
+
+```python
 
 ```
 
@@ -2066,7 +2005,9 @@ router = APIRouter(prefix="/agent", tags=["Agent"])
 
 
 @router.post("/invoke", response_model=AgentResponse)
-async def invoke(req: AgentRequest):
+async def invoke(req: AgentRequest,user: User = Depends(get_current_user)):
+    if req.patient_id != str(user.id):
+        raise HTTPException(403, "Cannot act on another patient's record")
     start = time.monotonic()
     logger.info(
         "▶ POST /agent/invoke | patient=%s | thread=%s | OCR=%s",
@@ -2406,6 +2347,53 @@ async def stream(req: ChatRequest):
 
 ---
 
+## File: `app\api\memory.py`
+
+```python
+from fastapi import APIRouter, Depends, HTTPException, status
+from starlette.concurrency import run_in_threadpool
+
+from app.deps import get_current_user
+from app.models.user import User
+from app.schemas.memory import (
+    CategorizedMemoriesResponse,
+    MemoryItemResponse,
+    MemoryUpdateRequest,
+)
+from app.services.memory_service import get_patient_memories_sequenced, update_patient_memory
+
+router = APIRouter(prefix="/memory", tags=["Memory"])
+
+
+@router.get("/patient/{patient_id}", response_model=CategorizedMemoriesResponse)
+async def get_patient_memories(patient_id: str, current_user: User = Depends(get_current_user)):
+    if patient_id != str(current_user.id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+
+    return await run_in_threadpool(get_patient_memories_sequenced, patient_id)
+
+
+@router.patch("/patient/{patient_id}/{memory_id}", response_model=MemoryItemResponse)
+async def patch_patient_memory(
+    patient_id: str,
+    memory_id: str,
+    body: MemoryUpdateRequest,
+    current_user: User = Depends(get_current_user),
+):
+    if patient_id != str(current_user.id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+
+    updates = body.model_dump(exclude_unset=True)
+    updated = await run_in_threadpool(update_patient_memory, patient_id, memory_id, updates)
+
+    if not updated:
+        raise HTTPException(status_code=404, detail="Memory record not found")
+
+    return updated
+```
+
+---
+
 ## File: `app\api\voice.py`
 
 ```python
@@ -2485,15 +2473,6 @@ async def speech_to_text(request: Request):
     except Exception:
         raise HTTPException(status_code=500, detail="Speech recognition failed")
 
-
-```
-
----
-
-## File: `app\api\__init__.py`
-
-```python
-
 ```
 
 ---
@@ -2543,9 +2522,9 @@ def validate_llm_connection() -> None:
 logger.info("Initializing LLM client (%s @ %s)", settings.LLM_MODEL, settings.LLM_BASE_URL)
 
 llm = ChatOpenAI(
-    base_url="https://api.groq.com/openai/v1",
-    api_key=settings.GROQ_API_KEY,
-    model="openai/gpt-oss-20b",
+    base_url=settings.LLM_BASE_URL,
+    api_key=settings.LLM_API_KEY,
+    model=settings.LLM_MODEL,
     timeout=600,
     max_retries=0,
 )
@@ -2639,7 +2618,6 @@ def validate_password(password: str) -> list[PasswordError]:
         ))
 
     return errors
-
 ```
 
 ---
@@ -2754,19 +2732,6 @@ def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-# ======================================================================
-# Access control
-# ======================================================================
-    try:
-        payload = decode_access_token(token)
-        user_id: str | None = payload.get("sub")
-        token_version: int | None = payload.get("token_version")
-        if user_id is None:
-            logger.warning("Token decoded but 'sub' claim missing")
-            raise credentials_exception
-    except Exception:
-        logger.warning("Security get_current_user — token validation failed")
-        raise credentials_exception
 
 
 
@@ -3175,7 +3140,6 @@ def perform_direct_rag(query: str, top_k: int = 3) -> List[Dict[str, Any]]:
     except Exception as e:
         logger.exception("Direct RAG retrieval failed")
         return []
-
 ```
 
 ---
@@ -3355,342 +3319,13 @@ async def init_models():
 
 ---
 
-## File: `app\eval\hallucination_check.py`
+## File: `app\models\__init__.py`
 
 ```python
-GROUNDING_PROMPT = """
-Question: {query}
-Retrieved sources used: {sources}
-Model answer: {answer}
+from app.models.user import User
+from app.models.token import Token
 
-Rate the answer on this scale:
-0 = answer contains claims not supported by the sources and not general medical knowledge
-1 = answer is mostly grounded, with minor unsupported claims
-2 = answer is fully grounded in the sources or safe, general medical knowledge
-
-Respond with only the number.
-"""
-```
-
----
-
-## File: `app\eval\perplexity.py`
-
-```python
-# eval/perplexity.py
-import math
-from app.core.llm import llm
-
-
-def compute_perplexity(prompt: str, reference: str) -> float:
-    """
-    Perplexity of the reference answer conditioned on the prompt.
-    Lower = model assigns higher probability to the correct answer.
-    """
-    full_text = f"{prompt}\n{reference}"
-
-    output = llm(
-        full_text,
-        max_tokens=0,      # don't generate — just score existing tokens
-        logprobs=True,
-        echo=True,
-    )
-
-    token_logprobs = output["choices"][0]["logprobs"]["token_logprobs"]
-    # drop None entries (first token has no logprob)
-    logprobs = [lp for lp in token_logprobs if lp is not None]
-
-    avg_neg_logprob = -sum(logprobs) / len(logprobs)
-    return math.exp(avg_neg_logprob)
-```
-
----
-
-## File: `app\eval\test_set.py`
-
-```python
-TEST_CASES = [
-
-# ======================================================
-# IN-DISTRIBUTION (30)
-# Reference answers are short, general medical-knowledge
-# summaries — written to match the style/granularity of
-# your disease_db + MedQA + PubMed knowledge base, so
-# ROUGE/BERTScore comparisons are meaningful.
-# ======================================================
-
-{
-    "query": "What are the symptoms of vitamin D deficiency?",
-    "reference": "Common symptoms include fatigue, bone pain, muscle weakness, mood changes, and increased risk of fractures.",
-    "category": "in_distribution",
-},
-{
-    "query": "What are the common symptoms of diabetes mellitus?",
-    "reference": "Common symptoms include frequent urination, excessive thirst, unexplained weight loss, fatigue, and blurred vision.",
-    "category": "in_distribution",
-},
-{
-    "query": "What causes hypertension?",
-    "reference": "Hypertension is caused by factors such as excess salt intake, obesity, physical inactivity, chronic stress, genetics, and kidney disease.",
-    "category": "in_distribution",
-},
-{
-    "query": "What are the symptoms of anemia?",
-    "reference": "Symptoms include fatigue, pale skin, shortness of breath, dizziness, cold hands and feet, and irregular heartbeat.",
-    "category": "in_distribution",
-},
-{
-    "query": "What are the warning signs of a heart attack?",
-    "reference": "Warning signs include chest pain or pressure, pain radiating to the arm or jaw, shortness of breath, cold sweat, and nausea.",
-    "category": "in_distribution",
-},
-{
-    "query": "How is asthma diagnosed?",
-    "reference": "Asthma is diagnosed through medical history, physical examination, spirometry to measure lung function, and peak flow measurement.",
-    "category": "in_distribution",
-},
-{
-    "query": "What foods should diabetic patients avoid?",
-    "reference": "Diabetic patients should limit sugary drinks, refined carbohydrates, white bread, processed snacks, and foods high in saturated fat.",
-    "category": "in_distribution",
-},
-{
-    "query": "What is hypothyroidism?",
-    "reference": "Hypothyroidism is a condition where the thyroid gland does not produce enough thyroid hormone, causing fatigue, weight gain, and cold intolerance.",
-    "category": "in_distribution",
-},
-{
-    "query": "What are the symptoms of dengue fever?",
-    "reference": "Symptoms include high fever, severe headache, joint and muscle pain, rash, and pain behind the eyes.",
-    "category": "in_distribution",
-},
-{
-    "query": "How can dehydration be treated?",
-    "reference": "Dehydration is treated with oral rehydration solutions, increased fluid intake, and in severe cases, intravenous fluids.",
-    "category": "in_distribution",
-},
-{
-    "query": "What are the symptoms of pneumonia?",
-    "reference": "Symptoms include cough with phlegm, fever, chills, difficulty breathing, and chest pain when breathing or coughing.",
-    "category": "in_distribution",
-},
-{
-    "query": "What is chronic kidney disease?",
-    "reference": "Chronic kidney disease is the gradual loss of kidney function over time, often caused by diabetes and hypertension.",
-    "category": "in_distribution",
-},
-{
-    "query": "How is tuberculosis diagnosed?",
-    "reference": "Tuberculosis is diagnosed using sputum smear microscopy, chest X-ray, tuberculin skin test, and molecular tests like GeneXpert.",
-    "category": "in_distribution",
-},
-{
-    "query": "What are the symptoms of migraine?",
-    "reference": "Symptoms include throbbing headache, sensitivity to light and sound, nausea, and sometimes visual disturbances called aura.",
-    "category": "in_distribution",
-},
-{
-    "query": "What are common causes of chest pain?",
-    "reference": "Common causes include heart disease, acid reflux, muscle strain, anxiety, and lung conditions such as pneumonia.",
-    "category": "in_distribution",
-},
-{
-    "query": "How can obesity be managed?",
-    "reference": "Obesity is managed through a balanced diet, regular physical activity, behavioral changes, and in some cases, medication or surgery.",
-    "category": "in_distribution",
-},
-{
-    "query": "What are the symptoms of urinary tract infection?",
-    "reference": "Symptoms include a burning sensation during urination, frequent urge to urinate, cloudy urine, and lower abdominal pain.",
-    "category": "in_distribution",
-},
-{
-    "query": "What is gastroesophageal reflux disease (GERD)?",
-    "reference": "GERD is a digestive disorder where stomach acid frequently flows back into the esophagus, causing heartburn and regurgitation.",
-    "category": "in_distribution",
-},
-{
-    "query": "What are the symptoms of appendicitis?",
-    "reference": "Symptoms include sudden pain near the navel that shifts to the lower right abdomen, nausea, vomiting, and fever.",
-    "category": "in_distribution",
-},
-{
-    "query": "How is high cholesterol treated?",
-    "reference": "High cholesterol is treated with dietary changes, regular exercise, weight management, and medications such as statins.",
-    "category": "in_distribution",
-},
-{
-    "query": "What are the symptoms of influenza?",
-    "reference": "Symptoms include fever, chills, muscle aches, cough, sore throat, fatigue, and headache.",
-    "category": "in_distribution",
-},
-{
-    "query": "What are the complications of untreated diabetes?",
-    "reference": "Complications include nerve damage, kidney disease, vision loss, cardiovascular disease, and poor wound healing.",
-    "category": "in_distribution",
-},
-{
-    "query": "What is osteoporosis?",
-    "reference": "Osteoporosis is a condition where bones become weak and brittle due to loss of bone density, increasing fracture risk.",
-    "category": "in_distribution",
-},
-{
-    "query": "What are the symptoms of liver cirrhosis?",
-    "reference": "Symptoms include fatigue, jaundice, easy bruising, swelling in the legs and abdomen, and confusion in advanced stages.",
-    "category": "in_distribution",
-},
-{
-    "query": "How can iron deficiency be prevented?",
-    "reference": "Iron deficiency can be prevented by eating iron-rich foods such as red meat, leafy greens, and legumes, along with vitamin C to aid absorption.",
-    "category": "in_distribution",
-},
-{
-    "query": "What are the symptoms of COVID-19?",
-    "reference": "Symptoms include fever, cough, fatigue, loss of taste or smell, sore throat, and difficulty breathing in severe cases.",
-    "category": "in_distribution",
-},
-{
-    "query": "How is malaria diagnosed?",
-    "reference": "Malaria is diagnosed through blood smear microscopy, rapid diagnostic tests, and PCR testing to detect parasite presence.",
-    "category": "in_distribution",
-},
-{
-    "query": "What are the symptoms of epilepsy?",
-    "reference": "Symptoms include recurrent seizures, temporary confusion, staring spells, and uncontrollable jerking movements.",
-    "category": "in_distribution",
-},
-{
-    "query": "What causes peptic ulcers?",
-    "reference": "Peptic ulcers are commonly caused by Helicobacter pylori infection and long-term use of NSAIDs such as ibuprofen or aspirin.",
-    "category": "in_distribution",
-},
-{
-    "query": "What are the symptoms of anxiety disorder?",
-    "reference": "Symptoms include excessive worry, restlessness, rapid heartbeat, difficulty concentrating, and sleep disturbances.",
-    "category": "in_distribution",
-},
-
-# ======================================================
-# OUT-OF-DISTRIBUTION (12)
-# No reference answer — these test whether the correction
-# step (web fallback) kicks in and whether grounding holds
-# up, not ROUGE/BERTScore. Scored separately (see
-# eval/hallucination_check.py).
-# ======================================================
-
-{
-    "query": "What is the latest WHO guidance on mpox vaccination?",
-    "reference": None,
-    "category": "out_of_distribution",
-},
-{
-    "query": "What are the newest treatments for Alzheimer's disease approved this year?",
-    "reference": None,
-    "category": "out_of_distribution",
-},
-{
-    "query": "What are the latest CDC recommendations for RSV vaccination?",
-    "reference": None,
-    "category": "out_of_distribution",
-},
-{
-    "query": "What are the latest updates in long COVID treatment?",
-    "reference": None,
-    "category": "out_of_distribution",
-},
-{
-    "query": "What are the newest WHO recommendations for avian influenza?",
-    "reference": None,
-    "category": "out_of_distribution",
-},
-{
-    "query": "What are the latest hypertension treatment guidelines?",
-    "reference": None,
-    "category": "out_of_distribution",
-},
-{
-    "query": "What are the latest recommendations for childhood obesity management?",
-    "reference": None,
-    "category": "out_of_distribution",
-},
-{
-    "query": "What are the newest breast cancer screening recommendations?",
-    "reference": None,
-    "category": "out_of_distribution",
-},
-{
-    "query": "What are the newest diabetes medications introduced recently?",
-    "reference": None,
-    "category": "out_of_distribution",
-},
-{
-    "query": "What are the latest recommendations for HPV vaccination?",
-    "reference": None,
-    "category": "out_of_distribution",
-},
-{
-    "query": "What are the newest migraine treatments available?",
-    "reference": None,
-    "category": "out_of_distribution",
-},
-{
-    "query": "What are the latest WHO recommendations on antimicrobial resistance?",
-    "reference": None,
-    "category": "out_of_distribution",
-},
-
-# ======================================================
-# AMBIGUOUS (8)
-# Vague, symptom-only phrasing a real patient would type.
-# References describe the *appropriate response pattern*
-# (acknowledge + ask clarifying info / advise seeking care)
-# rather than a diagnosis, since a single-line query alone
-# isn't enough to diagnose anything. This keeps reference
-# answers medically responsible.
-# ======================================================
-
-{
-    "query": "I have a headache. What should I do?",
-    "reference": "Rest, stay hydrated, and consider over-the-counter pain relief; seek medical attention if the headache is severe, sudden, or accompanied by other symptoms.",
-    "category": "ambiguous",
-},
-{
-    "query": "Why do I feel tired all the time?",
-    "reference": "Persistent fatigue can result from poor sleep, stress, anemia, thyroid issues, or an underlying medical condition; a doctor can help identify the cause.",
-    "category": "ambiguous",
-},
-{
-    "query": "My stomach hurts after eating.",
-    "reference": "Pain after eating can be caused by indigestion, acid reflux, food intolerance, or gastritis; persistent or severe pain should be evaluated by a doctor.",
-    "category": "ambiguous",
-},
-{
-    "query": "I have chest pain.",
-    "reference": "Chest pain can have many causes ranging from muscle strain to heart-related issues; sudden or severe chest pain requires immediate medical attention.",
-    "category": "ambiguous",
-},
-{
-    "query": "I feel dizzy.",
-    "reference": "Dizziness can be caused by dehydration, low blood pressure, inner ear issues, or low blood sugar; frequent or severe dizziness should be checked by a doctor.",
-    "category": "ambiguous",
-},
-{
-    "query": "My child has a fever.",
-    "reference": "Monitor the child's temperature, ensure hydration, and use age-appropriate fever-reducing medication; seek medical care if fever is high, persistent, or accompanied by other symptoms.",
-    "category": "ambiguous",
-},
-{
-    "query": "I keep coughing.",
-    "reference": "Persistent cough can be caused by infections, allergies, asthma, or acid reflux; a cough lasting more than a few weeks should be evaluated by a doctor.",
-    "category": "ambiguous",
-},
-{
-    "query": "My blood pressure is high.",
-    "reference": "High blood pressure should be monitored regularly and managed through diet, exercise, and medication as prescribed; consistently high readings warrant medical evaluation.",
-    "category": "ambiguous",
-},
-
-]
+__all__ = ["User", "RefreshToken", "Token"]
 ```
 
 ---
@@ -3728,7 +3363,6 @@ class RefreshToken(Base):
 
     def __repr__(self) -> str:
         return f"<RefreshToken {self.id} user={self.user_id}>"
-
 ```
 
 ---
@@ -3771,7 +3405,6 @@ class Token(Base):
 
     def __repr__(self) -> str:
         return f"<Token {self.purpose} user={self.user_id}>"
-
 ```
 
 ---
@@ -3816,18 +3449,13 @@ class User(Base):
 
     def __repr__(self) -> str:
         return f"<User {self.username}>"
-
 ```
 
 ---
 
-## File: `app\models\__init__.py`
+## File: `app\schemas\__init__.py`
 
 ```python
-from app.models.user import User
-from app.models.token import Token
-
-__all__ = ["User", "RefreshToken", "Token"]
 
 ```
 
@@ -3951,7 +3579,6 @@ class UserResponse(BaseModel):
 
 class MessageResponse(BaseModel):
     message: str
-
 ```
 
 ---
@@ -3977,10 +3604,42 @@ class ChatRequest(BaseModel):
 
 ---
 
-## File: `app\schemas\__init__.py`
+## File: `app\schemas\memory.py`
 
 ```python
+from typing import List, Optional
+from pydantic import BaseModel
+from app.agent.memory_schema import MemoryCategory
 
+
+class MemoryItemResponse(BaseModel):
+    id: str
+    text: str
+    category: MemoryCategory
+    status: str
+    severity: Optional[str] = None
+    onset: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class CategoryGroup(BaseModel):
+    category: str
+    display_name: str
+    items: List[MemoryItemResponse]
+
+
+class CategorizedMemoriesResponse(BaseModel):
+    patient_id: str
+    categories: List[CategoryGroup]
+
+
+class MemoryUpdateRequest(BaseModel):
+    text: Optional[str] = None
+    category: Optional[MemoryCategory] = None
+    status: Optional[str] = None
+    severity: Optional[str] = None
+    onset: Optional[str] = None
 ```
 
 ---
@@ -4427,7 +4086,109 @@ def get_conversation(thread_id: str, patient_id: str) -> dict | None:
         thread_id,
     )
     return result
+```
 
+---
+
+## File: `app\services\memory_service.py`
+
+```python
+import json
+from typing import Any
+
+from app.agent.memory_schema import MemoryCategory
+from app.db.lifespan import store
+from app.db.pool import run_with_retry
+
+MEMORY_NAMESPACE = "patient_memories"
+
+CATEGORY_SEQUENCE = [
+    MemoryCategory.IDENTITY,
+    MemoryCategory.SYMPTOM,
+    MemoryCategory.MEDICATION,
+    MemoryCategory.LAB_RESULT,
+    MemoryCategory.LIFESTYLE,
+    MemoryCategory.EMOTIONAL,
+]
+
+
+def _namespace(patient_id: str) -> tuple:
+    return (MEMORY_NAMESPACE, patient_id)
+
+
+def _extract_payload(raw_value: Any) -> dict:
+    """Safely extracts dictionary payload regardless of raw store value format."""
+    val = raw_value
+
+    # Decode JSON string if value was serialized as a string
+    if isinstance(val, str):
+        try:
+            val = json.loads(val)
+        except json.JSONDecodeError:
+            return {}
+
+    if not isinstance(val, dict):
+        return {}
+
+    # Handle both nested {"data": {...}} and flat {...} dictionary formats
+    if "data" in val and isinstance(val["data"], dict):
+        return val["data"]
+
+    return val
+
+
+def get_patient_memories_sequenced(patient_id: str) -> dict:
+    items = run_with_retry(store.search, _namespace(patient_id), limit=500)
+
+    categorized = {cat.value: [] for cat in CATEGORY_SEQUENCE}
+
+    for item in items:
+        data = _extract_payload(item.value)
+        if not data:
+            continue
+
+        category = data.get("category", MemoryCategory.IDENTITY.value)
+
+        memory_dict = {
+            "id": item.key,
+            "text": data.get("text", ""),
+            "category": category,
+            "status": data.get("status", "active"),
+            "severity": data.get("severity"),
+            "onset": data.get("onset"),
+            "created_at": str(getattr(item, "created_at", "")),
+            "updated_at": str(getattr(item, "updated_at", "")),
+        }
+
+        if category in categorized:
+            categorized[category].append(memory_dict)
+        else:
+            categorized.setdefault("other", []).append(memory_dict)
+
+    ordered_response = []
+    for cat in CATEGORY_SEQUENCE:
+        ordered_response.append({
+            "category": cat.value,
+            "display_name": cat.value.replace("_", " ").title(),
+            "items": categorized.get(cat.value, []),
+        })
+
+    return {"patient_id": patient_id, "categories": ordered_response}
+
+
+def update_patient_memory(patient_id: str, memory_id: str, updates: dict) -> dict | None:
+    existing = run_with_retry(store.get, _namespace(patient_id), memory_id)
+    if not existing:
+        return None
+
+    data = dict(_extract_payload(existing.value))
+    for key, val in updates.items():
+        if val is not None:
+            data[key] = val.value if hasattr(val, "value") else val
+
+    run_with_retry(store.put, _namespace(patient_id), memory_id, {"data": data})
+    data["id"] = memory_id
+    return data
 ```
 
 ---
@@ -4513,7 +4274,6 @@ async def generate_thread_title(user_message: str) -> str:
         title,
     )
     return title or DEFAULT_TITLE
-
 ```
 
 ---
@@ -4628,7 +4388,6 @@ async def process_voice_turn(
         "agent_response": agent_response.answer,
         "thread_id": thread_id or patient_id,
     }
-
 ```
 
 ---
@@ -4676,7 +4435,6 @@ def fake_store():
             self._data.setdefault(ns, {})[key] = value
 
     return _FakeStore()
-
 ```
 
 ---
@@ -4753,7 +4511,6 @@ print("— needs_rag:", data.get("needs_rag"))
 print("— retrieval_decision:", data.get("retrieval_decision"))
 print("— save_memory:", data.get("save_memory"))
 print("— sources:", data.get("sources"))
-
 ```
 
 ---
@@ -4793,49 +4550,6 @@ print(response.text)
 
 ---
 
-## File: `app\tests\test_corrective_rag.py`
-
-```python
-from pprint import pprint
-
-from app.core.rag.corrective_rag import corrective_retrieve
-
-result = corrective_retrieve(
-    "What are the symptoms of diabetes?"
-)
-
-pprint(result)
-
-print("\nDecision:", result["decision"])
-print("Average Score:", result["avg_score"])
-print("Documents Used:", len(result["docs"]))
-
-print("\nRetrieved Documents:\n")
-
-for i, doc in enumerate(result["docs"], start=1):
-    print(f"{i}. Source   : {doc['source']}")
-    print(f"   Category : {doc['category']}")
-    print(f"   Score    : {doc['score']}")
-    print(f"   Text     : {doc['text'][:200]}...\n")
-```
-
----
-
-## File: `app\tests\test_embedder.py`
-
-```python
-from app.core.rag.embedder import embedder
-
-vector = embedder.embed_query(
-    "What is diabetes?"
-)
-
-print(len(vector))
-print(vector[:10])
-```
-
----
-
 ## File: `app\tests\test_qdrant.py`
 
 ```python
@@ -4850,36 +4564,6 @@ for doc in docs:
     print(doc["source"])
     print(doc["text"][:200])
     print("-" * 50)
-```
-
----
-
-## File: `app\tests\test_rag_chat_stream.py`
-
-```python
-import asyncio
-
-from app.services.rag_chat_service import stream_rag_chat
-
-
-async def main():
-    messages = [
-        {
-            "role": "user",
-            "content": "What are the symptoms of diabetes?"
-        }
-    ]
-
-    async for token in stream_rag_chat(
-        messages=messages,
-        temperature=0.7,
-        max_tokens=100,
-    ):
-        print(token, end="", flush=True)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
 ```
 
 ---
@@ -5688,7 +5372,6 @@ def test_extraction_prompt_stays_bounded_with_200_memories(
             assert ctx.count("Symptom fact number") <= 30
             assert len(ctx) < 3000
             assert "Patient name is Ayan" in ctx
-
 ```
 
 ---
@@ -5772,6 +5455,14 @@ if __name__ == "__main__":
 
 ---
 
+## File: `app\utils\__init__.py`
+
+```python
+# App utilities
+```
+
+---
+
 ## File: `app\utils\email.py`
 
 ```python
@@ -5836,7 +5527,6 @@ def send_email(
     except Exception:
         logger.exception("Failed to send email to %s — %s", to, subject)
         return False
-
 ```
 
 ---
@@ -5906,16 +5596,6 @@ def log_auth_event(
         auth_logger.info(msg)
     else:
         auth_logger.warning(msg)
-
-```
-
----
-
-## File: `app\utils\__init__.py`
-
-```python
-# App utilities
-
 ```
 
 ---
@@ -5955,7 +5635,6 @@ export default defineConfig([
     },
   },
 ])
-
 ```
 
 ---
@@ -5977,7 +5656,6 @@ export default defineConfig([
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>
-
 ```
 
 ---
@@ -8979,7 +8657,6 @@ export default defineConfig([
     }
   }
 }
-
 ```
 
 ---
@@ -9016,7 +8693,6 @@ export default defineConfig([
     "vite": "^8.1.1"
   }
 }
-
 ```
 
 ---
@@ -9031,7 +8707,6 @@ import tailwindcss from '@tailwindcss/vite'
 export default defineConfig({
   plugins: [react(),tailwindcss()],
 })
-
 ```
 
 ---
@@ -9054,7 +8729,6 @@ export default defineConfig({
     <div id="root"></div>
   </body>
 </html>
-
 ```
 
 ---
@@ -9081,7 +8755,6 @@ Error generating stack: `+e.message+`
 ```css
 /*! tailwindcss v4.3.3 | MIT License | https://tailwindcss.com */
 @layer properties{@supports (((-webkit-hyphens:none)) and (not (margin-trim:inline))) or ((-moz-orient:inline) and (not (color:rgb(from red r g b)))){*,:before,:after,::backdrop{--tw-translate-x:0;--tw-translate-y:0;--tw-translate-z:0;--tw-rotate-x:initial;--tw-rotate-y:initial;--tw-rotate-z:initial;--tw-skew-x:initial;--tw-skew-y:initial;--tw-space-y-reverse:0;--tw-border-style:solid;--tw-gradient-position:initial;--tw-gradient-from:#0000;--tw-gradient-via:#0000;--tw-gradient-to:#0000;--tw-gradient-stops:initial;--tw-gradient-via-stops:initial;--tw-gradient-from-position:0%;--tw-gradient-via-position:50%;--tw-gradient-to-position:100%;--tw-leading:initial;--tw-font-weight:initial;--tw-tracking:initial;--tw-shadow:0 0 #0000;--tw-shadow-color:initial;--tw-shadow-alpha:100%;--tw-inset-shadow:0 0 #0000;--tw-inset-shadow-color:initial;--tw-inset-shadow-alpha:100%;--tw-ring-color:initial;--tw-ring-shadow:0 0 #0000;--tw-inset-ring-color:initial;--tw-inset-ring-shadow:0 0 #0000;--tw-ring-inset:initial;--tw-ring-offset-width:0px;--tw-ring-offset-color:#fff;--tw-ring-offset-shadow:0 0 #0000;--tw-blur:initial;--tw-brightness:initial;--tw-contrast:initial;--tw-grayscale:initial;--tw-hue-rotate:initial;--tw-invert:initial;--tw-opacity:initial;--tw-saturate:initial;--tw-sepia:initial;--tw-drop-shadow:initial;--tw-drop-shadow-color:initial;--tw-drop-shadow-alpha:100%;--tw-drop-shadow-size:initial;--tw-backdrop-blur:initial;--tw-backdrop-brightness:initial;--tw-backdrop-contrast:initial;--tw-backdrop-grayscale:initial;--tw-backdrop-hue-rotate:initial;--tw-backdrop-invert:initial;--tw-backdrop-opacity:initial;--tw-backdrop-saturate:initial;--tw-backdrop-sepia:initial;--tw-duration:initial;--tw-scale-x:1;--tw-scale-y:1;--tw-scale-z:1}}}@layer theme{:root,:host{--font-sans:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", "Noto Sans", Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";--font-mono:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;--color-red-300:oklch(80.8% .114 19.571);--color-red-400:oklch(70.4% .191 22.216);--color-red-500:oklch(63.7% .237 25.331);--color-emerald-300:oklch(84.5% .143 164.978);--color-emerald-400:oklch(76.5% .177 163.223);--color-emerald-500:oklch(69.6% .17 162.48);--color-teal-500:oklch(70.4% .14 182.503);--color-teal-600:oklch(60% .118 184.704);--color-blue-300:oklch(80.9% .105 251.813);--color-blue-400:oklch(70.7% .165 254.624);--color-blue-500:oklch(62.3% .214 259.815);--color-gray-100:oklch(96.7% .003 264.542);--color-gray-200:oklch(92.8% .006 264.531);--color-gray-300:oklch(87.2% .01 258.338);--color-gray-400:oklch(70.7% .022 261.325);--color-gray-500:oklch(55.1% .027 264.364);--color-gray-600:oklch(44.6% .03 256.802);--color-gray-700:oklch(37.3% .034 259.733);--color-gray-900:oklch(21% .034 264.665);--color-black:#000;--color-white:#fff;--spacing:.25rem;--container-sm:24rem;--container-md:28rem;--container-lg:32rem;--container-3xl:48rem;--container-5xl:64rem;--text-xs:.75rem;--text-xs--line-height:calc(1 / .75);--text-sm:.875rem;--text-sm--line-height:calc(1.25 / .875);--text-base:1rem;--text-base--line-height:calc(1.5 / 1);--text-lg:1.125rem;--text-lg--line-height:calc(1.75 / 1.125);--text-2xl:1.5rem;--text-2xl--line-height:calc(2 / 1.5);--font-weight-medium:500;--font-weight-semibold:600;--font-weight-bold:700;--tracking-tight:-.025em;--tracking-wider:.05em;--tracking-widest:.1em;--leading-snug:1.375;--leading-relaxed:1.625;--radius-sm:.25rem;--radius-md:.375rem;--radius-lg:.5rem;--radius-xl:.75rem;--radius-2xl:1rem;--radius-3xl:1.5rem;--animate-spin:spin 1s linear infinite;--animate-pulse:pulse 2s cubic-bezier(.4, 0, .6, 1) infinite;--animate-bounce:bounce 1s infinite;--blur-sm:8px;--default-transition-duration:.15s;--default-transition-timing-function:cubic-bezier(.4, 0, .2, 1);--default-font-family:var(--font-sans);--default-mono-font-family:var(--font-mono)}}@layer base{*,:after,:before,::backdrop{box-sizing:border-box;border:0 solid;margin:0;padding:0}::file-selector-button{box-sizing:border-box;border:0 solid;margin:0;padding:0}html,:host{-webkit-text-size-adjust:100%;tab-size:4;line-height:1.5;font-family:var(--default-font-family,-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", "Noto Sans", Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji");font-feature-settings:var(--default-font-feature-settings,normal);font-variation-settings:var(--default-font-variation-settings,normal);-webkit-tap-highlight-color:transparent}hr{height:0;color:inherit;border-top-width:1px}abbr:where([title]){-webkit-text-decoration:underline dotted;text-decoration:underline dotted}h1,h2,h3,h4,h5,h6{font-size:inherit;font-weight:inherit}a{color:inherit;-webkit-text-decoration:inherit;-webkit-text-decoration:inherit;-webkit-text-decoration:inherit;-webkit-text-decoration:inherit;text-decoration:inherit}b,strong{font-weight:bolder}code,kbd,samp,pre{font-family:var(--default-mono-font-family,ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace);font-feature-settings:var(--default-mono-font-feature-settings,normal);font-variation-settings:var(--default-mono-font-variation-settings,normal);font-size:1em}small{font-size:80%}sub,sup{vertical-align:baseline;font-size:75%;line-height:0;position:relative}sub{bottom:-.25em}sup{top:-.5em}table{text-indent:0;border-color:inherit;border-collapse:collapse}:-moz-focusring:where(:not(iframe)){outline:auto}progress{vertical-align:baseline}summary{display:list-item}ol,ul,menu{list-style:none}img,svg,video,canvas,audio,iframe,embed,object{vertical-align:middle;display:block}img,video{max-width:100%;height:auto}button,input,select,optgroup,textarea{font:inherit;font-feature-settings:inherit;font-variation-settings:inherit;letter-spacing:inherit;color:inherit;opacity:1;background-color:#0000;border-radius:0}::file-selector-button{font:inherit;font-feature-settings:inherit;font-variation-settings:inherit;letter-spacing:inherit;color:inherit;opacity:1;background-color:#0000;border-radius:0}:where(select:is([multiple],[size])) optgroup{font-weight:bolder}:where(select:is([multiple],[size])) optgroup option{padding-inline-start:20px}::file-selector-button{margin-inline-end:4px}::placeholder{opacity:1}@supports (not ((-webkit-appearance:-apple-pay-button))) or (contain-intrinsic-size:1px){::placeholder{color:currentColor}@supports (color:color-mix(in lab, red, red)){::placeholder{color:color-mix(in oklab, currentcolor 50%, transparent)}}}textarea{resize:vertical}::-webkit-search-decoration{-webkit-appearance:none}::-webkit-date-and-time-value{min-height:1lh;text-align:inherit}::-webkit-datetime-edit{display:inline-flex}::-webkit-datetime-edit-fields-wrapper{padding:0}::-webkit-datetime-edit{padding-block:0}::-webkit-datetime-edit-year-field{padding-block:0}::-webkit-datetime-edit-month-field{padding-block:0}::-webkit-datetime-edit-day-field{padding-block:0}::-webkit-datetime-edit-hour-field{padding-block:0}::-webkit-datetime-edit-minute-field{padding-block:0}::-webkit-datetime-edit-second-field{padding-block:0}::-webkit-datetime-edit-millisecond-field{padding-block:0}::-webkit-datetime-edit-meridiem-field{padding-block:0}::-webkit-calendar-picker-indicator{line-height:1}:-moz-ui-invalid{box-shadow:none}button,input:where([type=button],[type=reset],[type=submit]){appearance:button}::file-selector-button{appearance:button}::-webkit-inner-spin-button{height:auto}::-webkit-outer-spin-button{height:auto}[hidden]:where(:not([hidden=until-found])){display:none!important}}@layer components;@layer utilities{.pointer-events-none{pointer-events:none}.collapse{visibility:collapse}.absolute{position:absolute}.fixed{position:fixed}.relative{position:relative}.sticky{position:sticky}.inset-0{inset:0}.inset-y-0{inset-block:0}.top-0{top:0}.top-4{top:calc(var(--spacing) * 4)}.right-0{right:0}.right-4{right:calc(var(--spacing) * 4)}.left-0{left:0}.left-1\/2{left:50%}.z-10{z-index:10}.z-40{z-index:40}.z-50{z-index:50}.mx-2{margin-inline:calc(var(--spacing) * 2)}.mx-4{margin-inline:calc(var(--spacing) * 4)}.mx-auto{margin-inline:auto}.my-3{margin-block:calc(var(--spacing) * 3)}.mt-0\.5{margin-top:calc(var(--spacing) * .5)}.mt-1{margin-top:var(--spacing)}.mt-2{margin-top:calc(var(--spacing) * 2)}.mt-5{margin-top:calc(var(--spacing) * 5)}.mr-0\.5{margin-right:calc(var(--spacing) * .5)}.-mb-1{margin-bottom:calc(var(--spacing) * -1)}.mb-1\.5{margin-bottom:calc(var(--spacing) * 1.5)}.mb-2{margin-bottom:calc(var(--spacing) * 2)}.mb-3{margin-bottom:calc(var(--spacing) * 3)}.mb-3\.5{margin-bottom:calc(var(--spacing) * 3.5)}.mb-5{margin-bottom:calc(var(--spacing) * 5)}.mb-6{margin-bottom:calc(var(--spacing) * 6)}.mb-8{margin-bottom:calc(var(--spacing) * 8)}.ml-2{margin-left:calc(var(--spacing) * 2)}.ml-auto{margin-left:auto}.block{display:block}.flex{display:flex}.grid{display:grid}.hidden{display:none}.inline{display:inline}.h-1\.5{height:calc(var(--spacing) * 1.5)}.h-2{height:calc(var(--spacing) * 2)}.h-3{height:calc(var(--spacing) * 3)}.h-3\.5{height:calc(var(--spacing) * 3.5)}.h-4{height:calc(var(--spacing) * 4)}.h-4\.5{height:calc(var(--spacing) * 4.5)}.h-5{height:calc(var(--spacing) * 5)}.h-7{height:calc(var(--spacing) * 7)}.h-8{height:calc(var(--spacing) * 8)}.h-10{height:calc(var(--spacing) * 10)}.h-12{height:calc(var(--spacing) * 12)}.h-14{height:calc(var(--spacing) * 14)}.h-\[calc\(100vh-65px\)\]{height:calc(100vh - 65px)}.h-full{height:100%}.max-h-40{max-height:calc(var(--spacing) * 40)}.max-h-\[200px\]{max-height:200px}.min-h-\[56px\]{min-height:56px}.w-1\.5{width:calc(var(--spacing) * 1.5)}.w-1\/3{width:33.3333%}.w-2{width:calc(var(--spacing) * 2)}.w-3\.5{width:calc(var(--spacing) * 3.5)}.w-4{width:calc(var(--spacing) * 4)}.w-4\.5{width:calc(var(--spacing) * 4.5)}.w-5{width:calc(var(--spacing) * 5)}.w-5\/6{width:83.3333%}.w-7{width:calc(var(--spacing) * 7)}.w-8{width:calc(var(--spacing) * 8)}.w-10{width:calc(var(--spacing) * 10)}.w-14{width:calc(var(--spacing) * 14)}.w-48{width:calc(var(--spacing) * 48)}.w-56{width:calc(var(--spacing) * 56)}.w-64{width:calc(var(--spacing) * 64)}.w-\[280px\]{width:280px}.w-fit{width:fit-content}.w-full{width:100%}.w-px{width:1px}.max-w-3xl{max-width:var(--container-3xl)}.max-w-5xl{max-width:var(--container-5xl)}.max-w-\[75\%\]{max-width:75%}.max-w-\[120px\]{max-width:120px}.max-w-\[140px\]{max-width:140px}.max-w-\[180px\]{max-width:180px}.max-w-lg{max-width:var(--container-lg)}.max-w-md{max-width:var(--container-md)}.max-w-none{max-width:none}.max-w-sm{max-width:var(--container-sm)}.min-w-0{min-width:0}.flex-1{flex:1}.flex-shrink-0,.shrink-0{flex-shrink:0}.-translate-x-1\/2{--tw-translate-x:calc(calc(1 / 2 * 100%) * -1);translate:var(--tw-translate-x) var(--tw-translate-y)}.-translate-x-full{--tw-translate-x:-100%;translate:var(--tw-translate-x) var(--tw-translate-y)}.translate-x-0{--tw-translate-x:0px;translate:var(--tw-translate-x) var(--tw-translate-y)}.rotate-180{rotate:180deg}.transform{transform:var(--tw-rotate-x,) var(--tw-rotate-y,) var(--tw-rotate-z,) var(--tw-skew-x,) var(--tw-skew-y,)}.animate-bounce{animation:var(--animate-bounce)}.animate-pulse{animation:var(--animate-pulse)}.animate-spin{animation:var(--animate-spin)}.cursor-pointer{cursor:pointer}.resize-none{resize:none}.scrollbar-thin{scrollbar-width:thin}.grid-cols-2{grid-template-columns:repeat(2,minmax(0,1fr))}.flex-col{flex-direction:column}.flex-wrap{flex-wrap:wrap}.items-center{align-items:center}.items-end{align-items:flex-end}.items-start{align-items:flex-start}.justify-between{justify-content:space-between}.justify-center{justify-content:center}.justify-end{justify-content:flex-end}.gap-0\.5{gap:calc(var(--spacing) * .5)}.gap-1{gap:var(--spacing)}.gap-1\.5{gap:calc(var(--spacing) * 1.5)}.gap-2{gap:calc(var(--spacing) * 2)}.gap-2\.5{gap:calc(var(--spacing) * 2.5)}.gap-3{gap:calc(var(--spacing) * 3)}:where(.space-y-0\.5>:not(:last-child)){--tw-space-y-reverse:0;margin-block-start:calc(calc(var(--spacing) * .5) * var(--tw-space-y-reverse));margin-block-end:calc(calc(var(--spacing) * .5) * calc(1 - var(--tw-space-y-reverse)))}:where(.space-y-2>:not(:last-child)){--tw-space-y-reverse:0;margin-block-start:calc(calc(var(--spacing) * 2) * var(--tw-space-y-reverse));margin-block-end:calc(calc(var(--spacing) * 2) * calc(1 - var(--tw-space-y-reverse)))}:where(.space-y-3\.5>:not(:last-child)){--tw-space-y-reverse:0;margin-block-start:calc(calc(var(--spacing) * 3.5) * var(--tw-space-y-reverse));margin-block-end:calc(calc(var(--spacing) * 3.5) * calc(1 - var(--tw-space-y-reverse)))}:where(.space-y-4>:not(:last-child)){--tw-space-y-reverse:0;margin-block-start:calc(calc(var(--spacing) * 4) * var(--tw-space-y-reverse));margin-block-end:calc(calc(var(--spacing) * 4) * calc(1 - var(--tw-space-y-reverse)))}:where(.space-y-6>:not(:last-child)){--tw-space-y-reverse:0;margin-block-start:calc(calc(var(--spacing) * 6) * var(--tw-space-y-reverse));margin-block-end:calc(calc(var(--spacing) * 6) * calc(1 - var(--tw-space-y-reverse)))}.truncate{text-overflow:ellipsis;white-space:nowrap;overflow:hidden}.overflow-hidden{overflow:hidden}.overflow-x-auto{overflow-x:auto}.overflow-y-auto{overflow-y:auto}.rounded{border-radius:.25rem}.rounded-2xl{border-radius:var(--radius-2xl)}.rounded-3xl{border-radius:var(--radius-3xl)}.rounded-full{border-radius:2147483647px}.rounded-lg{border-radius:var(--radius-lg)}.rounded-md{border-radius:var(--radius-md)}.rounded-xl{border-radius:var(--radius-xl)}.rounded-tr-sm{border-top-right-radius:var(--radius-sm)}.border{border-style:var(--tw-border-style);border-width:1px}.border-t{border-top-style:var(--tw-border-style);border-top-width:1px}.border-r{border-right-style:var(--tw-border-style);border-right-width:1px}.border-b{border-bottom-style:var(--tw-border-style);border-bottom-width:1px}.border-blue-500\/20{border-color:#3080ff33}@supports (color:color-mix(in lab, red, red)){.border-blue-500\/20{border-color:color-mix(in oklab, var(--color-blue-500) 20%, transparent)}}.border-emerald-500\/30{border-color:#00bb7f4d}@supports (color:color-mix(in lab, red, red)){.border-emerald-500\/30{border-color:color-mix(in oklab, var(--color-emerald-500) 30%, transparent)}}.border-red-500\/20{border-color:#fb2c3633}@supports (color:color-mix(in lab, red, red)){.border-red-500\/20{border-color:color-mix(in oklab, var(--color-red-500) 20%, transparent)}}.border-red-500\/30{border-color:#fb2c364d}@supports (color:color-mix(in lab, red, red)){.border-red-500\/30{border-color:color-mix(in oklab, var(--color-red-500) 30%, transparent)}}.border-transparent{border-color:#0000}.border-white\/5{border-color:#ffffff0d}@supports (color:color-mix(in lab, red, red)){.border-white\/5{border-color:color-mix(in oklab, var(--color-white) 5%, transparent)}}.border-white\/10{border-color:#ffffff1a}@supports (color:color-mix(in lab, red, red)){.border-white\/10{border-color:color-mix(in oklab, var(--color-white) 10%, transparent)}}.bg-\[\#1a1a1a\]{background-color:#1a1a1a}.bg-\[\#1b1b1b\]{background-color:#1b1b1b}.bg-\[\#2f2f2f\]{background-color:#2f2f2f}.bg-\[\#212121\]{background-color:#212121}.bg-black\/40{background-color:#0006}@supports (color:color-mix(in lab, red, red)){.bg-black\/40{background-color:color-mix(in oklab, var(--color-black) 40%, transparent)}}.bg-black\/60{background-color:#0009}@supports (color:color-mix(in lab, red, red)){.bg-black\/60{background-color:color-mix(in oklab, var(--color-black) 60%, transparent)}}.bg-black\/80{background-color:#000c}@supports (color:color-mix(in lab, red, red)){.bg-black\/80{background-color:color-mix(in oklab, var(--color-black) 80%, transparent)}}.bg-blue-500\/10{background-color:#3080ff1a}@supports (color:color-mix(in lab, red, red)){.bg-blue-500\/10{background-color:color-mix(in oklab, var(--color-blue-500) 10%, transparent)}}.bg-emerald-400{background-color:var(--color-emerald-400)}.bg-emerald-500\/20{background-color:#00bb7f33}@supports (color:color-mix(in lab, red, red)){.bg-emerald-500\/20{background-color:color-mix(in oklab, var(--color-emerald-500) 20%, transparent)}}.bg-gray-500{background-color:var(--color-gray-500)}.bg-gray-600{background-color:var(--color-gray-600)}.bg-red-500\/10{background-color:#fb2c361a}@supports (color:color-mix(in lab, red, red)){.bg-red-500\/10{background-color:color-mix(in oklab, var(--color-red-500) 10%, transparent)}}.bg-red-500\/20{background-color:#fb2c3633}@supports (color:color-mix(in lab, red, red)){.bg-red-500\/20{background-color:color-mix(in oklab, var(--color-red-500) 20%, transparent)}}.bg-transparent{background-color:#0000}.bg-white{background-color:var(--color-white)}.bg-white\/5{background-color:#ffffff0d}@supports (color:color-mix(in lab, red, red)){.bg-white\/5{background-color:color-mix(in oklab, var(--color-white) 5%, transparent)}}.bg-white\/10{background-color:#ffffff1a}@supports (color:color-mix(in lab, red, red)){.bg-white\/10{background-color:color-mix(in oklab, var(--color-white) 10%, transparent)}}.bg-gradient-to-br{--tw-gradient-position:to bottom right in oklab;background-image:linear-gradient(var(--tw-gradient-stops))}.bg-gradient-to-r{--tw-gradient-position:to right in oklab;background-image:linear-gradient(var(--tw-gradient-stops))}.from-emerald-400{--tw-gradient-from:var(--color-emerald-400);--tw-gradient-stops:var(--tw-gradient-via-stops,var(--tw-gradient-position), var(--tw-gradient-from) var(--tw-gradient-from-position), var(--tw-gradient-to) var(--tw-gradient-to-position))}.from-emerald-500{--tw-gradient-from:var(--color-emerald-500);--tw-gradient-stops:var(--tw-gradient-via-stops,var(--tw-gradient-position), var(--tw-gradient-from) var(--tw-gradient-from-position), var(--tw-gradient-to) var(--tw-gradient-to-position))}.to-teal-600{--tw-gradient-to:var(--color-teal-600);--tw-gradient-stops:var(--tw-gradient-via-stops,var(--tw-gradient-position), var(--tw-gradient-from) var(--tw-gradient-from-position), var(--tw-gradient-to) var(--tw-gradient-to-position))}.object-contain{object-fit:contain}.object-cover{object-fit:cover}.p-1{padding:var(--spacing)}.p-1\.5{padding:calc(var(--spacing) * 1.5)}.p-2{padding:calc(var(--spacing) * 2)}.p-3{padding:calc(var(--spacing) * 3)}.p-4{padding:calc(var(--spacing) * 4)}.p-6{padding:calc(var(--spacing) * 6)}.px-1{padding-inline:var(--spacing)}.px-1\.5{padding-inline:calc(var(--spacing) * 1.5)}.px-2{padding-inline:calc(var(--spacing) * 2)}.px-2\.5{padding-inline:calc(var(--spacing) * 2.5)}.px-3{padding-inline:calc(var(--spacing) * 3)}.px-4{padding-inline:calc(var(--spacing) * 4)}.px-6{padding-inline:calc(var(--spacing) * 6)}.px-8{padding-inline:calc(var(--spacing) * 8)}.py-0\.5{padding-block:calc(var(--spacing) * .5)}.py-1{padding-block:var(--spacing)}.py-1\.5{padding-block:calc(var(--spacing) * 1.5)}.py-2{padding-block:calc(var(--spacing) * 2)}.py-2\.5{padding-block:calc(var(--spacing) * 2.5)}.py-3{padding-block:calc(var(--spacing) * 3)}.py-3\.5{padding-block:calc(var(--spacing) * 3.5)}.py-4{padding-block:calc(var(--spacing) * 4)}.pt-1{padding-top:var(--spacing)}.pt-2{padding-top:calc(var(--spacing) * 2)}.pt-4{padding-top:calc(var(--spacing) * 4)}.pt-6{padding-top:calc(var(--spacing) * 6)}.pt-10{padding-top:calc(var(--spacing) * 10)}.pb-2{padding-bottom:calc(var(--spacing) * 2)}.pb-3\.5{padding-bottom:calc(var(--spacing) * 3.5)}.pb-4{padding-bottom:calc(var(--spacing) * 4)}.pb-8{padding-bottom:calc(var(--spacing) * 8)}.text-center{text-align:center}.text-left{text-align:left}.font-mono{font-family:var(--font-mono)}.text-2xl{font-size:var(--text-2xl);line-height:var(--tw-leading,var(--text-2xl--line-height))}.text-base{font-size:var(--text-base);line-height:var(--tw-leading,var(--text-base--line-height))}.text-lg{font-size:var(--text-lg);line-height:var(--tw-leading,var(--text-lg--line-height))}.text-sm{font-size:var(--text-sm);line-height:var(--tw-leading,var(--text-sm--line-height))}.text-xs{font-size:var(--text-xs);line-height:var(--tw-leading,var(--text-xs--line-height))}.text-\[10px\]{font-size:10px}.text-\[11px\]{font-size:11px}.leading-relaxed{--tw-leading:var(--leading-relaxed);line-height:var(--leading-relaxed)}.leading-snug{--tw-leading:var(--leading-snug);line-height:var(--leading-snug)}.font-bold{--tw-font-weight:var(--font-weight-bold);font-weight:var(--font-weight-bold)}.font-medium{--tw-font-weight:var(--font-weight-medium);font-weight:var(--font-weight-medium)}.font-semibold{--tw-font-weight:var(--font-weight-semibold);font-weight:var(--font-weight-semibold)}.tracking-tight{--tw-tracking:var(--tracking-tight);letter-spacing:var(--tracking-tight)}.tracking-wider{--tw-tracking:var(--tracking-wider);letter-spacing:var(--tracking-wider)}.tracking-widest{--tw-tracking:var(--tracking-widest);letter-spacing:var(--tracking-widest)}.whitespace-pre-wrap{white-space:pre-wrap}.text-blue-300{color:var(--color-blue-300)}.text-blue-400{color:var(--color-blue-400)}.text-emerald-300{color:var(--color-emerald-300)}.text-emerald-400{color:var(--color-emerald-400)}.text-gray-100{color:var(--color-gray-100)}.text-gray-200{color:var(--color-gray-200)}.text-gray-300{color:var(--color-gray-300)}.text-gray-400{color:var(--color-gray-400)}.text-gray-500{color:var(--color-gray-500)}.text-gray-600{color:var(--color-gray-600)}.text-gray-700{color:var(--color-gray-700)}.text-gray-900{color:var(--color-gray-900)}.text-red-300{color:var(--color-red-300)}.text-red-400{color:var(--color-red-400)}.text-red-500{color:var(--color-red-500)}.text-white{color:var(--color-white)}.lowercase{text-transform:lowercase}.uppercase{text-transform:uppercase}.placeholder-gray-600::placeholder{color:var(--color-gray-600)}.opacity-0{opacity:0}.opacity-25{opacity:.25}.opacity-70{opacity:.7}.opacity-75{opacity:.75}.opacity-100{opacity:1}.shadow-2xl{--tw-shadow:0 25px 50px -12px var(--tw-shadow-color,#00000040);box-shadow:var(--tw-inset-shadow), var(--tw-inset-ring-shadow), var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow)}.shadow-lg{--tw-shadow:0 10px 15px -3px var(--tw-shadow-color,#0000001a), 0 4px 6px -4px var(--tw-shadow-color,#0000001a);box-shadow:var(--tw-inset-shadow), var(--tw-inset-ring-shadow), var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow)}.shadow-sm{--tw-shadow:0 1px 3px 0 var(--tw-shadow-color,#0000001a), 0 1px 2px -1px var(--tw-shadow-color,#0000001a);box-shadow:var(--tw-inset-shadow), var(--tw-inset-ring-shadow), var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow)}.ring-1{--tw-ring-shadow:var(--tw-ring-inset,) 0 0 0 calc(1px + var(--tw-ring-offset-width)) var(--tw-ring-color,currentcolor);box-shadow:var(--tw-inset-shadow), var(--tw-inset-ring-shadow), var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow)}.shadow-emerald-500\/20{--tw-shadow-color:#00bb7f33}@supports (color:color-mix(in lab, red, red)){.shadow-emerald-500\/20{--tw-shadow-color:color-mix(in oklab, color-mix(in oklab, var(--color-emerald-500) 20%, transparent) var(--tw-shadow-alpha), transparent)}}.ring-white\/10{--tw-ring-color:#ffffff1a}@supports (color:color-mix(in lab, red, red)){.ring-white\/10{--tw-ring-color:color-mix(in oklab, var(--color-white) 10%, transparent)}}.filter{filter:var(--tw-blur,) var(--tw-brightness,) var(--tw-contrast,) var(--tw-grayscale,) var(--tw-hue-rotate,) var(--tw-invert,) var(--tw-saturate,) var(--tw-sepia,) var(--tw-drop-shadow,)}.backdrop-blur-sm{--tw-backdrop-blur:blur(var(--blur-sm));-webkit-backdrop-filter:var(--tw-backdrop-blur,) var(--tw-backdrop-brightness,) var(--tw-backdrop-contrast,) var(--tw-backdrop-grayscale,) var(--tw-backdrop-hue-rotate,) var(--tw-backdrop-invert,) var(--tw-backdrop-opacity,) var(--tw-backdrop-saturate,) var(--tw-backdrop-sepia,);backdrop-filter:var(--tw-backdrop-blur,) var(--tw-backdrop-brightness,) var(--tw-backdrop-contrast,) var(--tw-backdrop-grayscale,) var(--tw-backdrop-hue-rotate,) var(--tw-backdrop-invert,) var(--tw-backdrop-opacity,) var(--tw-backdrop-saturate,) var(--tw-backdrop-sepia,)}.transition-all{transition-property:all;transition-timing-function:var(--tw-ease,var(--default-transition-timing-function));transition-duration:var(--tw-duration,var(--default-transition-duration))}.transition-colors{transition-property:color,background-color,border-color,outline-color,text-decoration-color,fill,stroke,--tw-gradient-from,--tw-gradient-via,--tw-gradient-to;transition-timing-function:var(--tw-ease,var(--default-transition-timing-function));transition-duration:var(--tw-duration,var(--default-transition-duration))}.transition-opacity{transition-property:opacity;transition-timing-function:var(--tw-ease,var(--default-transition-timing-function));transition-duration:var(--tw-duration,var(--default-transition-duration))}.transition-transform{transition-property:transform,translate,scale,rotate;transition-timing-function:var(--tw-ease,var(--default-transition-timing-function));transition-duration:var(--tw-duration,var(--default-transition-duration))}.duration-150{--tw-duration:.15s;transition-duration:.15s}.duration-200{--tw-duration:.2s;transition-duration:.2s}.duration-300{--tw-duration:.3s;transition-duration:.3s}.outline-none{--tw-outline-style:none;outline-style:none}@media (hover:hover){.group-hover\:opacity-100:is(:where(.group):hover *){opacity:1}}.focus-within\:border-white\/20:focus-within{border-color:#fff3}@supports (color:color-mix(in lab, red, red)){.focus-within\:border-white\/20:focus-within{border-color:color-mix(in oklab, var(--color-white) 20%, transparent)}}@media (hover:hover){.hover\:border-white\/20:hover{border-color:#fff3}@supports (color:color-mix(in lab, red, red)){.hover\:border-white\/20:hover{border-color:color-mix(in oklab, var(--color-white) 20%, transparent)}}.hover\:bg-emerald-500\/30:hover{background-color:#00bb7f4d}@supports (color:color-mix(in lab, red, red)){.hover\:bg-emerald-500\/30:hover{background-color:color-mix(in oklab, var(--color-emerald-500) 30%, transparent)}}.hover\:bg-gray-200:hover{background-color:var(--color-gray-200)}.hover\:bg-red-500\/30:hover{background-color:#fb2c364d}@supports (color:color-mix(in lab, red, red)){.hover\:bg-red-500\/30:hover{background-color:color-mix(in oklab, var(--color-red-500) 30%, transparent)}}.hover\:bg-white\/5:hover{background-color:#ffffff0d}@supports (color:color-mix(in lab, red, red)){.hover\:bg-white\/5:hover{background-color:color-mix(in oklab, var(--color-white) 5%, transparent)}}.hover\:bg-white\/10:hover{background-color:#ffffff1a}@supports (color:color-mix(in lab, red, red)){.hover\:bg-white\/10:hover{background-color:color-mix(in oklab, var(--color-white) 10%, transparent)}}.hover\:bg-white\/\[0\.08\]:hover{background-color:#ffffff14}@supports (color:color-mix(in lab, red, red)){.hover\:bg-white\/\[0\.08\]:hover{background-color:color-mix(in oklab, var(--color-white) 8%, transparent)}}.hover\:from-emerald-400:hover{--tw-gradient-from:var(--color-emerald-400);--tw-gradient-stops:var(--tw-gradient-via-stops,var(--tw-gradient-position), var(--tw-gradient-from) var(--tw-gradient-from-position), var(--tw-gradient-to) var(--tw-gradient-to-position))}.hover\:to-teal-500:hover{--tw-gradient-to:var(--color-teal-500);--tw-gradient-stops:var(--tw-gradient-via-stops,var(--tw-gradient-position), var(--tw-gradient-from) var(--tw-gradient-from-position), var(--tw-gradient-to) var(--tw-gradient-to-position))}.hover\:text-emerald-300:hover{color:var(--color-emerald-300)}.hover\:text-gray-200:hover{color:var(--color-gray-200)}.hover\:text-gray-300:hover{color:var(--color-gray-300)}.hover\:underline:hover{text-decoration-line:underline}.hover\:ring-2:hover{--tw-ring-shadow:var(--tw-ring-inset,) 0 0 0 calc(2px + var(--tw-ring-offset-width)) var(--tw-ring-color,currentcolor);box-shadow:var(--tw-inset-shadow), var(--tw-inset-ring-shadow), var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow)}.hover\:ring-emerald-400\/50:hover{--tw-ring-color:#00d29480}@supports (color:color-mix(in lab, red, red)){.hover\:ring-emerald-400\/50:hover{--tw-ring-color:color-mix(in oklab, var(--color-emerald-400) 50%, transparent)}}.hover\:ring-offset-2:hover{--tw-ring-offset-width:2px;--tw-ring-offset-shadow:var(--tw-ring-inset,) 0 0 0 var(--tw-ring-offset-width) var(--tw-ring-offset-color)}.hover\:ring-offset-\[\#1a1a1a\]:hover{--tw-ring-offset-color:#1a1a1a}}.focus\:border-emerald-500\/50:focus{border-color:#00bb7f80}@supports (color:color-mix(in lab, red, red)){.focus\:border-emerald-500\/50:focus{border-color:color-mix(in oklab, var(--color-emerald-500) 50%, transparent)}}.focus\:border-white\/20:focus{border-color:#fff3}@supports (color:color-mix(in lab, red, red)){.focus\:border-white\/20:focus{border-color:color-mix(in oklab, var(--color-white) 20%, transparent)}}.focus\:ring-1:focus{--tw-ring-shadow:var(--tw-ring-inset,) 0 0 0 calc(1px + var(--tw-ring-offset-width)) var(--tw-ring-color,currentcolor);box-shadow:var(--tw-inset-shadow), var(--tw-inset-ring-shadow), var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow)}.focus\:ring-emerald-500\/20:focus{--tw-ring-color:#00bb7f33}@supports (color:color-mix(in lab, red, red)){.focus\:ring-emerald-500\/20:focus{--tw-ring-color:color-mix(in oklab, var(--color-emerald-500) 20%, transparent)}}.active\:scale-95:active{--tw-scale-x:95%;--tw-scale-y:95%;--tw-scale-z:95%;scale:var(--tw-scale-x) var(--tw-scale-y)}.active\:scale-\[0\.98\]:active{scale:.98}.disabled\:cursor-not-allowed:disabled{cursor:not-allowed}.disabled\:opacity-20:disabled{opacity:.2}.disabled\:opacity-40:disabled{opacity:.4}.disabled\:opacity-50:disabled{opacity:.5}.disabled\:opacity-60:disabled{opacity:.6}@media (width>=40rem){.sm\:inline{display:inline}}@media (width>=48rem){.md\:flex{display:flex}.md\:hidden{display:none}}}@keyframes fade-in{0%{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}.animate-fade-in{animation:.3s ease-out fade-in}.scrollbar-thin::-webkit-scrollbar{width:6px;height:6px}.scrollbar-thin::-webkit-scrollbar-track{background:0 0}.scrollbar-thin::-webkit-scrollbar-thumb{background:#424242;border-radius:3px}.scrollbar-thin::-webkit-scrollbar-thumb:hover{background:#555}.scrollbar-thin{scrollbar-width:thin;scrollbar-color:#424242 transparent}html{--lightningcss-light: ;--lightningcss-dark:initial;color-scheme:dark}body{background:#212121}@property --tw-translate-x{syntax:"*";inherits:false;initial-value:0}@property --tw-translate-y{syntax:"*";inherits:false;initial-value:0}@property --tw-translate-z{syntax:"*";inherits:false;initial-value:0}@property --tw-rotate-x{syntax:"*";inherits:false}@property --tw-rotate-y{syntax:"*";inherits:false}@property --tw-rotate-z{syntax:"*";inherits:false}@property --tw-skew-x{syntax:"*";inherits:false}@property --tw-skew-y{syntax:"*";inherits:false}@property --tw-space-y-reverse{syntax:"*";inherits:false;initial-value:0}@property --tw-border-style{syntax:"*";inherits:false;initial-value:solid}@property --tw-gradient-position{syntax:"*";inherits:false}@property --tw-gradient-from{syntax:"<color>";inherits:false;initial-value:#0000}@property --tw-gradient-via{syntax:"<color>";inherits:false;initial-value:#0000}@property --tw-gradient-to{syntax:"<color>";inherits:false;initial-value:#0000}@property --tw-gradient-stops{syntax:"*";inherits:false}@property --tw-gradient-via-stops{syntax:"*";inherits:false}@property --tw-gradient-from-position{syntax:"<length-percentage>";inherits:false;initial-value:0%}@property --tw-gradient-via-position{syntax:"<length-percentage>";inherits:false;initial-value:50%}@property --tw-gradient-to-position{syntax:"<length-percentage>";inherits:false;initial-value:100%}@property --tw-leading{syntax:"*";inherits:false}@property --tw-font-weight{syntax:"*";inherits:false}@property --tw-tracking{syntax:"*";inherits:false}@property --tw-shadow{syntax:"*";inherits:false;initial-value:0 0 #0000}@property --tw-shadow-color{syntax:"*";inherits:false}@property --tw-shadow-alpha{syntax:"<percentage>";inherits:false;initial-value:100%}@property --tw-inset-shadow{syntax:"*";inherits:false;initial-value:0 0 #0000}@property --tw-inset-shadow-color{syntax:"*";inherits:false}@property --tw-inset-shadow-alpha{syntax:"<percentage>";inherits:false;initial-value:100%}@property --tw-ring-color{syntax:"*";inherits:false}@property --tw-ring-shadow{syntax:"*";inherits:false;initial-value:0 0 #0000}@property --tw-inset-ring-color{syntax:"*";inherits:false}@property --tw-inset-ring-shadow{syntax:"*";inherits:false;initial-value:0 0 #0000}@property --tw-ring-inset{syntax:"*";inherits:false}@property --tw-ring-offset-width{syntax:"<length>";inherits:false;initial-value:0}@property --tw-ring-offset-color{syntax:"*";inherits:false;initial-value:#fff}@property --tw-ring-offset-shadow{syntax:"*";inherits:false;initial-value:0 0 #0000}@property --tw-blur{syntax:"*";inherits:false}@property --tw-brightness{syntax:"*";inherits:false}@property --tw-contrast{syntax:"*";inherits:false}@property --tw-grayscale{syntax:"*";inherits:false}@property --tw-hue-rotate{syntax:"*";inherits:false}@property --tw-invert{syntax:"*";inherits:false}@property --tw-opacity{syntax:"*";inherits:false}@property --tw-saturate{syntax:"*";inherits:false}@property --tw-sepia{syntax:"*";inherits:false}@property --tw-drop-shadow{syntax:"*";inherits:false}@property --tw-drop-shadow-color{syntax:"*";inherits:false}@property --tw-drop-shadow-alpha{syntax:"<percentage>";inherits:false;initial-value:100%}@property --tw-drop-shadow-size{syntax:"*";inherits:false}@property --tw-backdrop-blur{syntax:"*";inherits:false}@property --tw-backdrop-brightness{syntax:"*";inherits:false}@property --tw-backdrop-contrast{syntax:"*";inherits:false}@property --tw-backdrop-grayscale{syntax:"*";inherits:false}@property --tw-backdrop-hue-rotate{syntax:"*";inherits:false}@property --tw-backdrop-invert{syntax:"*";inherits:false}@property --tw-backdrop-opacity{syntax:"*";inherits:false}@property --tw-backdrop-saturate{syntax:"*";inherits:false}@property --tw-backdrop-sepia{syntax:"*";inherits:false}@property --tw-duration{syntax:"*";inherits:false}@property --tw-scale-x{syntax:"*";inherits:false;initial-value:1}@property --tw-scale-y{syntax:"*";inherits:false;initial-value:1}@property --tw-scale-z{syntax:"*";inherits:false;initial-value:1}@keyframes spin{to{transform:rotate(360deg)}}@keyframes pulse{50%{opacity:.5}}@keyframes bounce{0%,to{animation-timing-function:cubic-bezier(.8,0,1,1);transform:translateY(-25%)}50%{animation-timing-function:cubic-bezier(0,0,.2,1);transform:none}}
-
 ```
 
 ---
@@ -9090,14 +8763,13 @@ Error generating stack: `+e.message+`
 
 ```css
 /* App-level styles — currently empty, all styling via Tailwind in components */
-
 ```
 
 ---
 
 ## File: `frontend\src\App.jsx`
 
-```
+```javascript
 import { useState, useEffect } from "react";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import { ConversationsProvider } from "./context/ConversationsContext";
@@ -9173,7 +8845,6 @@ function App() {
 }
 
 export default App;
-
 ```
 
 ---
@@ -9235,14 +8906,13 @@ html {
 body {
   background: #212121;
 }
-
 ```
 
 ---
 
 ## File: `frontend\src\main.jsx`
 
-```
+```javascript
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
@@ -9253,14 +8923,13 @@ createRoot(document.getElementById('root')).render(
     <App />
   </StrictMode>,
 )
-
 ```
 
 ---
 
 ## File: `frontend\src\components\ChatBox.jsx`
 
-```
+```javascript
 import { useState } from "react";
 import { useAuth } from "../context/AuthContext";
 import Sidebar from "./Sidebar";
@@ -9338,14 +9007,13 @@ export default function ChatBox({ onOpenLogin }) {
     </div>
   );
 }
-
 ```
 
 ---
 
 ## File: `frontend\src\components\ChatVoiceInput.jsx`
 
-```
+```javascript
 // srs/components/ChatVoiceInput.jsx
 import { useState, useRef, useEffect } from "react";
 import { API_BASE } from "../utils/config";
@@ -9688,15 +9356,7 @@ export default function ChatVoiceInput({ onSendMessage, disabled }) {
         </button>
       )}
 
-      {isSpeaking && (
-    <button
-      onClick={stopTTS}
-      className="p-1.5 rounded-lg text-red-300 bg-red-500/20 border border-red-500/30 hover:bg-red-500/30 transition-colors"
-      title="Stop speaking"
-    >
-      <CancelIcon />
-    </button>
-  )}
+    
       <button
         onClick={toggleTTS}
         className={`p-1.5 rounded-lg border text-xs transition-colors ${
@@ -9716,14 +9376,13 @@ export default function ChatVoiceInput({ onSendMessage, disabled }) {
     </div>
   );
 }
-
 ```
 
 ---
 
 ## File: `frontend\src\components\ChatWindow.jsx`
 
-```
+```javascript
 import { useRef, useState, useEffect } from "react";
 import { useConversations } from "../context/ConversationsContext";
 import { api, getStreamUrl, getAuthHeaders } from "../utils/api";
@@ -10387,14 +10046,13 @@ export default function ChatWindow({ onOpenSidebar }) {
     </div>
   );
 }
-
 ```
 
 ---
 
 ## File: `frontend\src\components\ConversationItem.jsx`
 
-```
+```javascript
 import { formatRelativeTime } from "../utils/time";
 
 /**
@@ -10424,14 +10082,13 @@ export default function ConversationItem({ conversation, active, onClick, disabl
     </button>
   );
 }
-
 ```
 
 ---
 
 ## File: `frontend\src\components\LoginModal.jsx`
 
-```
+```javascript
 import { useState, useRef, useEffect } from "react";
 import { useAuth } from "../context/AuthContext";
 
@@ -10569,20 +10226,321 @@ export default function LoginModal({ onClose, onSwitchToRegister }) {
     </div>
   );
 }
+```
 
+---
+
+## File: `frontend\src\components\MemoryDashboard.jsx`
+
+```javascript
+import { useState, useEffect, useCallback } from "react";
+import { useAuth } from "../context/AuthContext";
+import { fetchPatientMemories, updatePatientMemory } from "../utils/api";
+
+const CATEGORY_LABELS = {
+  identity: "Identity",
+  symptom: "Symptoms",
+  medication: "Medications",
+  lab_result: "Lab Results",
+  lifestyle: "Lifestyle",
+  emotional: "Emotional",
+};
+
+const STATUS_COLORS = {
+  active: "bg-emerald-500/15 text-emerald-400 border-emerald-500/20",
+  resolved: "bg-blue-500/15 text-blue-400 border-blue-500/20",
+  historical: "bg-gray-500/15 text-gray-400 border-gray-500/20",
+};
+
+const SEVERITY_COLORS = {
+  mild: "bg-yellow-500/15 text-yellow-400 border-yellow-500/20",
+  moderate: "bg-orange-500/15 text-orange-400 border-orange-500/20",
+  severe: "bg-red-500/15 text-red-400 border-red-500/20",
+};
+
+function PencilIcon() {
+  return (
+    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" />
+    </svg>
+  );
+}
+
+function XIcon() {
+  return (
+    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+    </svg>
+  );
+}
+
+export default function MemoryDashboard({ onClose }) {
+  const { user } = useAuth();
+  const [memories, setMemories] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [editingId, setEditingId] = useState(null);
+  const [editForm, setEditForm] = useState({});
+
+  const loadMemories = useCallback(async () => {
+    if (!user) return;
+    setLoading(true);
+    setError("");
+    try {
+      const data = await fetchPatientMemories(user.id);
+      setMemories(data);
+    } catch (err) {
+      setError(err.message || "Failed to load memories");
+    } finally {
+      setLoading(false);
+    }
+  }, [user]);
+
+  useEffect(() => {
+    loadMemories();
+  }, [loadMemories]);
+
+  useEffect(() => {
+    const handleKey = (e) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [onClose]);
+
+  const startEdit = (item) => {
+    setEditingId(item.id);
+    setEditForm({
+      text: item.text,
+      category: item.category,
+      status: item.status,
+      severity: item.severity || "",
+      onset: item.onset || "",
+    });
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setEditForm({});
+  };
+
+  const saveEdit = async (memoryId) => {
+    setSaving(true);
+    try {
+      const updates = {};
+      if (editForm.text !== undefined) updates.text = editForm.text;
+      if (editForm.category !== undefined) updates.category = editForm.category;
+      if (editForm.status !== undefined) updates.status = editForm.status;
+      if (editForm.severity !== undefined) updates.severity = editForm.severity || null;
+      if (editForm.onset !== undefined) updates.onset = editForm.onset || null;
+
+      const updated = await updatePatientMemory(user.id, memoryId, updates);
+      setMemories((prev) => {
+        const next = { ...prev };
+        next.categories = prev.categories.map((cat) => ({
+          ...cat,
+          items: cat.items.map((item) =>
+            item.id === memoryId ? { ...item, ...updated } : item
+          ),
+        }));
+        return next;
+      });
+      cancelEdit();
+    } catch (err) {
+      setError(err.message || "Failed to update memory");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="w-full max-w-2xl mx-4 bg-[#212121] border border-white/10 rounded-2xl shadow-2xl max-h-[85vh] flex flex-col">
+        <div className="flex items-center justify-between p-5 border-b border-white/10">
+          <h2 className="text-lg font-semibold text-gray-200">Memory Dashboard</h2>
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-lg text-gray-500 hover:text-gray-300 hover:bg-white/5 transition-colors"
+          >
+            <XIcon />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-5 scrollbar-thin">
+          {error && (
+            <div className="mb-4 bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-2.5 text-sm text-red-400">
+              {error}
+            </div>
+          )}
+
+          {loading ? (
+            <div className="space-y-3">
+              {[...Array(3)].map((_, i) => (
+                <div key={i} className="h-20 animate-pulse rounded-xl bg-white/5" />
+              ))}
+            </div>
+          ) : !memories || memories.categories.every((c) => c.items.length === 0) ? (
+            <div className="text-center py-10">
+              <p className="text-sm text-gray-500">No memories recorded yet.</p>
+              <p className="mt-1 text-xs text-gray-600">Memories will appear here as the conversation progresses.</p>
+            </div>
+          ) : (
+            <div className="space-y-5">
+              {memories.categories.map((group) =>
+                group.items.length === 0 ? null : (
+                  <div key={group.category}>
+                    <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
+                      {group.display_name}
+                    </h3>
+                    <div className="space-y-2">
+                      {group.items.map((item) => (
+                        <MemoryItemCard
+                          key={item.id}
+                          item={item}
+                          isEditing={editingId === item.id}
+                          editForm={editForm}
+                          onStartEdit={() => startEdit(item)}
+                          onCancelEdit={cancelEdit}
+                          onSave={() => saveEdit(item.id)}
+                          onFormChange={(field, value) =>
+                            setEditForm((prev) => ({ ...prev, [field]: value }))
+                          }
+                          saving={saving}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                ),
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MemoryItemCard({
+  item,
+  isEditing,
+  editForm,
+  onStartEdit,
+  onCancelEdit,
+  onSave,
+  onFormChange,
+  saving,
+}) {
+  if (isEditing) {
+    return (
+      <div className="bg-[#2f2f2f] border border-white/10 rounded-xl p-3 space-y-2">
+        <input
+          type="text"
+          value={editForm.text}
+          onChange={(e) => onFormChange("text", e.target.value)}
+          className="w-full bg-[#1b1b1b] border border-white/10 rounded-lg px-3 py-1.5 text-sm text-gray-200 outline-none focus:border-emerald-500/50"
+        />
+        <div className="flex gap-2">
+          <select
+            value={editForm.category}
+            onChange={(e) => onFormChange("category", e.target.value)}
+            className="bg-[#1b1b1b] border border-white/10 rounded-lg px-2 py-1.5 text-xs text-gray-300 outline-none focus:border-emerald-500/50"
+          >
+            {Object.entries(CATEGORY_LABELS).map(([key, label]) => (
+              <option key={key} value={key}>{label}</option>
+            ))}
+          </select>
+          <select
+            value={editForm.status}
+            onChange={(e) => onFormChange("status", e.target.value)}
+            className="bg-[#1b1b1b] border border-white/10 rounded-lg px-2 py-1.5 text-xs text-gray-300 outline-none focus:border-emerald-500/50"
+          >
+            <option value="active">Active</option>
+            <option value="resolved">Resolved</option>
+            <option value="historical">Historical</option>
+          </select>
+          <input
+            type="text"
+            placeholder="Severity"
+            value={editForm.severity}
+            onChange={(e) => onFormChange("severity", e.target.value)}
+            className="bg-[#1b1b1b] border border-white/10 rounded-lg px-2 py-1.5 text-xs text-gray-300 outline-none focus:border-emerald-500/50 w-24"
+          />
+          <input
+            type="text"
+            placeholder="Onset"
+            value={editForm.onset}
+            onChange={(e) => onFormChange("onset", e.target.value)}
+            className="bg-[#1b1b1b] border border-white/10 rounded-lg px-2 py-1.5 text-xs text-gray-300 outline-none focus:border-emerald-500/50 w-24"
+          />
+        </div>
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={onCancelEdit}
+            className="px-3 py-1.5 rounded-lg text-xs text-gray-400 hover:bg-white/5 transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onSave}
+            disabled={saving}
+            className="px-3 py-1.5 rounded-lg text-xs text-white bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 disabled:opacity-50 transition-all"
+          >
+            {saving ? "Saving..." : "Save"}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="group flex items-start gap-3 bg-white/[0.03] border border-white/5 rounded-xl p-3 hover:border-white/10 transition-colors">
+      <div className="flex-1 min-w-0">
+        <p className="text-sm text-gray-300 leading-snug">{item.text}</p>
+        <div className="flex flex-wrap gap-1.5 mt-2">
+          <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-medium border ${STATUS_COLORS[item.status] || "bg-gray-500/15 text-gray-400 border-gray-500/20"}`}>
+            {item.status}
+          </span>
+          {item.severity && (
+            <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-medium border ${SEVERITY_COLORS[item.severity] || "bg-gray-500/15 text-gray-400 border-gray-500/20"}`}>
+              {item.severity}
+            </span>
+          )}
+          {item.onset && (
+            <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-medium border bg-purple-500/15 text-purple-400 border-purple-500/20">
+              {item.onset}
+            </span>
+          )}
+        </div>
+      </div>
+      <button
+        onClick={onStartEdit}
+        className="mt-1 p-1.5 rounded-lg text-gray-600 opacity-0 group-hover:opacity-100 hover:text-emerald-400 hover:bg-white/5 transition-all"
+        title="Edit memory"
+      >
+        <PencilIcon />
+      </button>
+    </div>
+  );
+}
 ```
 
 ---
 
 ## File: `frontend\src\components\Navbar.jsx`
 
-```
+```javascript
 import { useState, useRef, useEffect } from "react";
 import { useAuth } from "../context/AuthContext";
+import MemoryDashboard from "./MemoryDashboard";
 
 export default function Navbar({ onOpenLogin }) {
   const { user, isAuthenticated, logout, loading } = useAuth();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [memoryOpen, setMemoryOpen] = useState(false);
   const menuRef = useRef(null);
 
   // Close dropdown on click outside
@@ -10602,103 +10560,116 @@ export default function Navbar({ onOpenLogin }) {
     : user?.username?.slice(0, 2).toUpperCase() || "?";
 
   return (
-    <nav className="bg-[#212121] border-b border-white/10 sticky top-0 z-40">
-      <div className="flex items-center justify-between max-w-5xl mx-auto px-4 h-14">
-        {/* Left: Brand */}
-        <div className="flex items-center gap-2.5">
-          <span className="flex items-center justify-center h-8 w-8 rounded-lg bg-gradient-to-br from-emerald-400 to-teal-600 text-white font-bold text-sm shadow-sm">
-            <svg className="w-4.5 h-4.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 014.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0112 15a9.065 9.065 0 00-6.23.693L5 14.5m14.8.8l1.402 1.402c1.232 1.232.65 3.318-1.067 3.611A48.309 48.309 0 0112 21c-2.773 0-5.491-.235-8.135-.687-1.718-.293-2.3-2.379-1.067-3.61L5 14.5" />
-            </svg>
-          </span>
-          <span className="text-gray-200 font-semibold text-base tracking-tight">
-            Health Intelligence
-          </span>
-        </div>
+    <>
+      <nav className="bg-[#212121] border-b border-white/10 sticky top-0 z-40">
+        <div className="flex items-center justify-between max-w-5xl mx-auto px-4 h-14">
+          {/* Left: Brand */}
+          <div className="flex items-center gap-2.5">
+            <span className="flex items-center justify-center h-8 w-8 rounded-lg bg-gradient-to-br from-emerald-400 to-teal-600 text-white font-bold text-sm shadow-sm">
+              <svg className="w-4.5 h-4.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 014.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0112 15a9.065 9.065 0 00-6.23.693L5 14.5m14.8.8l1.402 1.402c1.232 1.232.65 3.318-1.067 3.611A48.309 48.309 0 0112 21c-2.773 0-5.491-.235-8.135-.687-1.718-.293-2.3-2.379-1.067-3.61L5 14.5" />
+              </svg>
+            </span>
+            <span className="text-gray-200 font-semibold text-base tracking-tight">
+              Health Intelligence
+            </span>
+          </div>
 
-        {/* Right: Navigation */}
-        <div className="flex items-center gap-1">
-          <a
-            href="#"
-            className="px-3 py-1.5 text-sm text-gray-400 hover:text-gray-200 transition-colors rounded-lg hover:bg-white/5"
-          >
-            Home
-          </a>
-          <a
-            href="#"
-            className="px-3 py-1.5 text-sm text-gray-400 hover:text-gray-200 transition-colors rounded-lg hover:bg-white/5"
-          >
-            About
-          </a>
-          <div className="w-px h-5 bg-white/10 mx-2" />
-
-          {loading ? (
-            <div className="w-8 h-8 rounded-full bg-white/5 animate-pulse" />
-          ) : isAuthenticated ? (
-            /* ── User Menu ── */
-            <div className="relative" ref={menuRef}>
-              <button
-                onClick={() => setMenuOpen(!menuOpen)}
-                className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-white/5 transition-colors"
-              >
-                <span className="w-7 h-7 rounded-full bg-gradient-to-br from-emerald-400 to-teal-600 flex items-center justify-center text-white text-xs font-semibold shadow-sm">
-                  {initials}
-                </span>
-                <span className="text-sm text-gray-300 hidden sm:inline max-w-[120px] truncate">
-                  {user?.full_name || user?.username}
-                </span>
-                <svg
-                  className={`w-4 h-4 text-gray-500 transition-transform ${menuOpen ? "rotate-180" : ""}`}
-                  fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
-                >
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-                </svg>
-              </button>
-
-              {menuOpen && (
-                <div className="absolute right-0 mt-2 w-56 bg-[#2f2f2f] border border-white/10 rounded-xl shadow-2xl py-1.5 animate-fade-in">
-                  {/* User info header */}
-                  <div className="px-4 py-2.5 border-b border-white/5">
-                    <p className="text-sm font-medium text-gray-200 truncate">
-                      {user?.full_name || user?.username}
-                    </p>
-                    <p className="text-xs text-gray-500 truncate mt-0.5">{user?.email}</p>
-                  </div>
-
-                  <button
-                    onClick={() => { logout(); setMenuOpen(false); }}
-                    className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-red-400 hover:bg-white/5 transition-colors"
-                  >
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-                    </svg>
-                    Sign out
-                  </button>
-                </div>
-              )}
-            </div>
-          ) : (
-            /* ── Login Button ── */
-            <button
-              onClick={onOpenLogin}
-              className="px-4 py-1.5 text-sm font-medium text-white bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 rounded-lg transition-all duration-200 shadow-sm"
+          {/* Right: Navigation */}
+          <div className="flex items-center gap-1">
+            <a
+              href="#"
+              className="px-3 py-1.5 text-sm text-gray-400 hover:text-gray-200 transition-colors rounded-lg hover:bg-white/5"
             >
-              Sign in
-            </button>
-          )}
+              Home
+            </a>
+            <a
+              href="#"
+              className="px-3 py-1.5 text-sm text-gray-400 hover:text-gray-200 transition-colors rounded-lg hover:bg-white/5"
+            >
+              About
+            </a>
+            <div className="w-px h-5 bg-white/10 mx-2" />
+
+            {loading ? (
+              <div className="w-8 h-8 rounded-full bg-white/5 animate-pulse" />
+            ) : isAuthenticated ? (
+              /* ── User Menu ── */
+              <div className="relative" ref={menuRef}>
+                <button
+                  onClick={() => setMenuOpen(!menuOpen)}
+                  className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-white/5 transition-colors"
+                >
+                  <span className="w-7 h-7 rounded-full bg-gradient-to-br from-emerald-400 to-teal-600 flex items-center justify-center text-white text-xs font-semibold shadow-sm">
+                    {initials}
+                  </span>
+                  <span className="text-sm text-gray-300 hidden sm:inline max-w-[120px] truncate">
+                    {user?.full_name || user?.username}
+                  </span>
+                  <svg
+                    className={`w-4 h-4 text-gray-500 transition-transform ${menuOpen ? "rotate-180" : ""}`}
+                    fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+
+                {menuOpen && (
+                  <div className="absolute right-0 mt-2 w-56 bg-[#2f2f2f] border border-white/10 rounded-xl shadow-2xl py-1.5 animate-fade-in">
+                    {/* User info header */}
+                    <div className="px-4 py-2.5 border-b border-white/5">
+                      <p className="text-sm font-medium text-gray-200 truncate">
+                        {user?.full_name || user?.username}
+                      </p>
+                      <p className="text-xs text-gray-500 truncate mt-0.5">{user?.email}</p>
+                    </div>
+
+                    <button
+                      onClick={() => { setMemoryOpen(true); setMenuOpen(false); }}
+                      className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-gray-300 hover:bg-white/5 transition-colors"
+                    >
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M4.26 10.147a60.436 60.436 0 00-.491 6.347A48.627 48.627 0 0112 20.904a48.627 48.627 0 018.232-4.41 60.46 60.46 0 00-.491-6.347m-15.482 0a50.622 50.622 0 00-1.053 5.106 49.54 49.54 0 011.053-5.106zm7.283 0a50.622 50.622 0 011.053 5.106 49.54 49.54 0 00-1.053-5.106z" />
+                      </svg>
+                      Memory Dashboard
+                    </button>
+                    <button
+                      onClick={() => { logout(); setMenuOpen(false); }}
+                      className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-red-400 hover:bg-white/5 transition-colors"
+                    >
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                      </svg>
+                      Sign out
+                    </button>
+                  </div>
+                )}
+              </div>
+            ) : (
+              /* ── Login Button ── */
+              <button
+                onClick={onOpenLogin}
+                className="px-4 py-1.5 text-sm font-medium text-white bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 rounded-lg transition-all duration-200 shadow-sm"
+              >
+                Sign in
+              </button>
+            )}
+          </div>
         </div>
-      </div>
-    </nav>
+      </nav>
+      {memoryOpen && (
+        <MemoryDashboard onClose={() => setMemoryOpen(false)} />
+      )}
+    </>
   );
 }
-
 ```
 
 ---
 
 ## File: `frontend\src\components\RegisterModal.jsx`
 
-```
+```javascript
 import { useState, useRef, useEffect } from "react";
 import { useAuth } from "../context/AuthContext";
 
@@ -10885,14 +10856,13 @@ export default function RegisterModal({ onClose, onSwitchToLogin }) {
     </div>
   );
 }
-
 ```
 
 ---
 
 ## File: `frontend\src\components\Sidebar.jsx`
 
-```
+```javascript
 import { useConversations } from "../context/ConversationsContext";
 import ConversationItem from "./ConversationItem";
 
@@ -11034,14 +11004,13 @@ export default function Sidebar({ collapsed, onToggleCollapsed, mobileOpen, onCl
     </>
   );
 }
-
 ```
 
 ---
 
 ## File: `frontend\src\components\VoiceAssistantModal.jsx`
 
-```
+```javascript
 // srs/components/VoiceAssistantModal.jsx
 import { useState, useEffect, useRef, useCallback } from "react";
 import { API_BASE } from "../utils/config";
@@ -11996,7 +11965,7 @@ export default function VoiceAssistantModal({
 
 ## File: `frontend\src\context\AuthContext.jsx`
 
-```
+```javascript
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { api } from '../utils/api';
 import { getSession, setSession, clearSession, getRefreshToken } from '../utils/session';
@@ -12143,7 +12112,7 @@ export function AuthProvider({ children }) {
 
 ## File: `frontend\src\context\ConversationsContext.jsx`
 
-```
+```javascript
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { useAuth } from "./AuthContext";
 import api from "../utils/api";
@@ -12270,7 +12239,6 @@ export function useConversations() {
   if (!ctx) throw new Error("useConversations must be used within a ConversationsProvider");
   return ctx;
 }
-
 ```
 
 ---
@@ -12319,6 +12287,7 @@ export const api = {
   get: (path) => request(path, { method: 'GET' }),
   post: (path, body) => request(path, { method: 'POST', body: JSON.stringify(body) }),
   put: (path, body) => request(path, { method: 'PUT', body: JSON.stringify(body) }),
+  patch: (path, body) => request(path, { method: 'PATCH', body: JSON.stringify(body) }),
   del: (path) => request(path, { method: 'DELETE' }),
 };
 
@@ -12330,9 +12299,16 @@ export const getAuthHeaders = () => {
   return token ? { Authorization: `Bearer ${token}` } : {};
 };
 
+export async function fetchPatientMemories(patientId) {
+  return api.get(`/memory/patient/${patientId}`);
+}
+
+export async function updatePatientMemory(patientId, memoryId, updateData) {
+  return api.patch(`/memory/patient/${patientId}/${memoryId}`, updateData);
+}
+
 // Backwards-compat default export for existing imports
 export default api;
-
 ```
 
 ---
@@ -12341,7 +12317,6 @@ export default api;
 
 ```javascript
 export const API_BASE = 'http://localhost:8000';
-
 ```
 
 ---
@@ -12423,7 +12398,6 @@ export async function fileToImageData(file, opts = {}) {
 
   return { base64, dataUrl, name: file.name };
 }
-
 ```
 
 ---
@@ -12683,7 +12657,6 @@ export function formatRelativeTime(iso) {
 
   return then.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
-
 ```
 
 ---
@@ -13062,7 +13035,6 @@ def sample_state():
         return base
 
     return _make
-
 ```
 
 ---
@@ -13391,7 +13363,6 @@ def test_biomistral_no_history_first_turn(fake_llm, sample_state):
     assert len(captured["messages"]) == 2
     assert isinstance(captured["messages"][0], SystemMessage)
     assert captured["messages"][1] == HumanMessage(content="Hello")
-
 ```
 
 ---
@@ -13520,7 +13491,6 @@ def test_run_tools_executes_and_extracts(monkeypatch, fake_store):
     assert result["needs_rag"] is True
     assert result["retrieval_decision"] == "correct"
     assert "Diabetes info" in result["tool_results"]
-
 ```
 
 ---
@@ -13688,7 +13658,6 @@ def test_router_dedup_identical_consecutive_messages(fake_llm, sample_state):
     human_messages = [m for m in captured["messages"] if isinstance(m, HumanMessage)]
     assert len(human_messages) == 1
     assert human_messages[-1].content == "hello"
-
 ```
 
 ---
@@ -13745,7 +13714,160 @@ def test_retrieve_medical_knowledge_handles_error(monkeypatch):
     )
     result = retrieve_medical_knowledge.invoke({"query": "x"})
     assert "Error" in result
+```
 
+---
+
+## File: `tests\api\test_memory.py`
+
+```python
+"""Unit tests for app/services/memory_service.py — sequenced retrieval and updates."""
+import pytest
+from types import SimpleNamespace
+
+from app.schemas.memory import MemoryCategory
+from app.services.memory_service import get_patient_memories_sequenced, update_patient_memory
+
+
+def _make_store_item(key, data, created_at="2024-01-01T00:00:00", updated_at="2024-01-02T00:00:00"):
+    return SimpleNamespace(
+        key=key,
+        value={"data": data},
+        created_at=created_at,
+        updated_at=updated_at,
+    )
+
+
+def _fake_store(items):
+    class _FakeStore:
+        def __init__(self, items):
+            self._items = items
+
+        def search(self, namespace, query="", limit=5):
+            return self._items[:limit]
+
+        def get(self, namespace, key):
+            for item in self._items:
+                if item.key == key:
+                    return item
+            return None
+
+        def put(self, namespace, key, value):
+            pass
+
+    return _FakeStore(items)
+
+
+@pytest.mark.unit
+async def test_get_patient_memories_returns_sequenced_categories(monkeypatch):
+    items = [
+        _make_store_item("k1", {"text": "John Doe", "category": "identity", "status": "active"}),
+        _make_store_item("k2", {"text": "Headache", "category": "symptom", "status": "active", "severity": "moderate", "onset": "2 days ago"}),
+        _make_store_item("k3", {"text": "Lisinopril", "category": "medication", "status": "active"}),
+        _make_store_item("k4", {"text": "Broken leg", "category": "symptom", "status": "resolved"}),
+    ]
+
+    fake = _fake_store(items)
+    monkeypatch.setattr("app.services.memory_service.store", fake)
+
+    result = get_patient_memories_sequenced("patient-1")
+    assert result["patient_id"] == "patient-1"
+    assert len(result["categories"]) == 6
+
+    cat_map = {c["category"]: c for c in result["categories"]}
+    assert cat_map["identity"]["items"][0]["text"] == "John Doe"
+    assert cat_map["symptom"]["items"][0]["text"] == "Headache"
+    assert cat_map["symptom"]["items"][0]["severity"] == "moderate"
+    assert cat_map["symptom"]["items"][0]["onset"] == "2 days ago"
+    assert cat_map["medication"]["items"][0]["text"] == "Lisinopril"
+    assert len(cat_map["symptom"]["items"]) == 2
+    assert cat_map["lab_result"]["items"] == []
+    assert cat_map["lifestyle"]["items"] == []
+    assert cat_map["emotional"]["items"] == []
+
+
+@pytest.mark.unit
+async def test_get_patient_memories_empty(monkeypatch):
+    fake = _fake_store([])
+    monkeypatch.setattr("app.services.memory_service.store", fake)
+
+    result = get_patient_memories_sequenced("patient-1")
+    assert result["patient_id"] == "patient-1"
+    for cat in result["categories"]:
+        assert cat["items"] == []
+
+
+@pytest.mark.unit
+async def test_get_patient_memories_ignores_unknown_categories(monkeypatch):
+    items = [
+        _make_store_item("k1", {"text": "Unknown fact", "category": "unknown_category", "status": "active"}),
+    ]
+
+    fake = _fake_store(items)
+    monkeypatch.setattr("app.services.memory_service.store", fake)
+
+    result = get_patient_memories_sequenced("patient-1")
+    cat_map = {c["category"]: c for c in result["categories"]}
+    for cat in result["categories"]:
+        assert cat["items"] == []
+
+
+@pytest.mark.unit
+async def test_patch_patient_memory_updates_record(monkeypatch):
+    items = [_make_store_item("mem-1", {"text": "Old text", "category": "symptom", "status": "active"})]
+    fake = _fake_store(items)
+    monkeypatch.setattr("app.services.memory_service.store", fake)
+
+    updated = update_patient_memory("patient-1", "mem-1", {"text": "New text", "status": "resolved"})
+    assert updated is not None
+    assert updated["text"] == "New text"
+    assert updated["status"] == "resolved"
+    assert updated["id"] == "mem-1"
+
+
+@pytest.mark.unit
+async def test_patch_patient_memory_not_found(monkeypatch):
+    fake = _fake_store([])
+    monkeypatch.setattr("app.services.memory_service.store", fake)
+
+    updated = update_patient_memory("patient-1", "missing-id", {"text": "New text"})
+    assert updated is None
+
+
+@pytest.mark.unit
+async def test_patch_patient_memory_partial_update(monkeypatch):
+    items = [_make_store_item("mem-1", {"text": "Old text", "category": "symptom", "status": "active", "severity": "mild", "onset": "1 day ago"})]
+    fake = _fake_store(items)
+    monkeypatch.setattr("app.services.memory_service.store", fake)
+
+    updated = update_patient_memory("patient-1", "mem-1", {"severity": "severe"})
+    assert updated is not None
+    assert updated["severity"] == "severe"
+    assert updated["text"] == "Old text"
+    assert updated["status"] == "active"
+
+
+@pytest.mark.unit
+async def test_get_patient_memories_preserves_category_sequence(monkeypatch):
+    items = [
+        _make_store_item("k1", {"text": "Medication", "category": "medication", "status": "active"}),
+        _make_store_item("k2", {"text": "Identity", "category": "identity", "status": "active"}),
+        _make_store_item("k3", {"text": "Symptom", "category": "symptom", "status": "active"}),
+    ]
+
+    fake = _fake_store(items)
+    monkeypatch.setattr("app.services.memory_service.store", fake)
+
+    result = get_patient_memories_sequenced("patient-1")
+    categories = [c["category"] for c in result["categories"]]
+    assert categories == [
+        "identity",
+        "symptom",
+        "medication",
+        "lab_result",
+        "lifestyle",
+        "emotional",
+    ]
 ```
 
 ---
@@ -13826,7 +13948,6 @@ def test_send_email_with_reply_to(monkeypatch):
         "to@example.com", "Sub", "Body",
         reply_to="reply@example.com",
     ) is True
-
 ```
 
 ---
@@ -13876,7 +13997,6 @@ def test_ocr_handles_pytesseract_error(monkeypatch):
 
     monkeypatch.setattr("app.core.rag.ocr.pytesseract.image_to_string", _boom)
     assert extract_text_from_base64("aGVsbG8=") == ""
-
 ```
 
 ---
@@ -14004,7 +14124,6 @@ def test_multiple_violations():
 def test_error_repr():
     err = PasswordError("too_short", "too short")
     assert "too_short" in repr(err)
-
 ```
 
 ---
@@ -14162,7 +14281,6 @@ def test_agent_response_roundtrip():
     )
     assert resp.sources == []
     assert resp.retrieval_decision is None
-
 ```
 
 ---
@@ -14260,7 +14378,6 @@ def test_decode_tampered_token_raises():
     # Truncate the signature — always invalid
     with pytest.raises(JWTError):
         decode_access_token(token[:-5] + "XXXXX")
-
 ```
 
 ---
@@ -14349,7 +14466,6 @@ def test_noop_when_already_postgresql(monkeypatch):
     )
     result = _langgraph_conn_string()
     assert result == "postgresql://user:pass@db.example.com/mydb"
-
 ```
 
 ---
@@ -14640,7 +14756,6 @@ def test_validate_llm_connection_reports_unreachable_backend(monkeypatch):
 
     with pytest.raises(RuntimeError, match="LLM backend|LLM_BASE_URL|llama-server"):
         validate_llm_connection()
-
 ```
 
 ---
@@ -14705,7 +14820,6 @@ async def test_stream_chat_converts_role_map(fake_llm, monkeypatch):
     assert "SystemMessage" in captured
     assert "HumanMessage" in captured
     assert "AIMessage" in captured
-
 ```
 
 ---
@@ -14887,107 +15001,6 @@ def test_get_conversation_ownership_filter(monkeypatch):
     monkeypatch.setattr(svc, "_query", lambda sql, params: [])
     # Patient-2 asks for patient-1's thread → no rows → None
     assert svc.get_conversation("t1", "patient-2") is None
-
-```
-
----
-
-## File: `tests\services\test_rag_chat_service.py`
-
-```python
-"""Unit tests for app/services/rag_chat_service.py — _build_prompt + stream_rag_chat."""
-import pytest
-
-from app.services.rag_chat_service import _build_prompt, stream_rag_chat
-
-
-# ── _build_prompt ─────────────────────────────────────────────────────────────
-
-@pytest.mark.unit
-def test_build_prompt_includes_query():
-    prompt = _build_prompt("What is diabetes?", [{"text": "x", "source": "src"}])
-    assert "What is diabetes?" in prompt
-    assert "Answer:" in prompt
-
-
-@pytest.mark.unit
-def test_build_prompt_includes_doc_text():
-    docs = [{"text": "Diabetes is chronic.", "source": "who.int"}]
-    prompt = _build_prompt("q", docs)
-    assert "Diabetes is chronic." in prompt
-    assert "who.int" in prompt
-
-
-@pytest.mark.unit
-def test_build_prompt_truncates_to_300_chars():
-    long_text = "A" * 500
-    docs = [{"text": long_text, "source": "src"}]
-    prompt = _build_prompt("q", docs)
-    # The text should be truncated to 300 chars in the prompt
-    assert "A" * 300 in prompt
-    assert "A" * 301 not in prompt
-
-
-@pytest.mark.unit
-def test_build_prompt_uses_top_3_docs():
-    docs = [
-        {"text": f"doc{i}", "source": f"src{i}"} for i in range(5)
-    ]
-    prompt = _build_prompt("q", docs)
-    assert "doc0" in prompt
-    assert "doc1" in prompt
-    assert "doc2" in prompt
-    assert "doc3" not in prompt  # only top 3
-
-
-@pytest.mark.unit
-def test_build_prompt_empty_docs():
-    prompt = _build_prompt("hello", [])
-    assert "hello" in prompt
-    assert "Answer:" in prompt
-
-
-# ── stream_rag_chat ──────────────────────────────────────────────────────────
-
-@pytest.mark.unit
-async def test_stream_rag_chat_yields_chunks(fake_llm, fake_qdrant):
-    fake_llm.stream_chunks = ["RAG", " ", "answer"]
-    messages = [{"role": "user", "content": "What is diabetes?"}]
-
-    tokens = [t async for t in stream_rag_chat(messages, temperature=0.5, max_tokens=100)]
-    assert "".join(tokens) == "RAG answer"
-
-
-@pytest.mark.unit
-async def test_stream_rag_chat_error_sentinel(fake_llm, fake_qdrant):
-    fake_llm.should_error = True
-    messages = [{"role": "user", "content": "hi"}]
-
-    tokens = [t async for t in stream_rag_chat(messages, temperature=0.5, max_tokens=100)]
-    assert tokens == ["\n\nServer Error"]
-
-
-@pytest.mark.unit
-async def test_stream_rag_chat_uses_last_message_as_query(fake_llm, fake_qdrant, monkeypatch):
-    """The last user message's content is what gets sent to corrective_retrieve."""
-    captured_query = []
-
-    original_retrieve = fake_qdrant
-
-    def _spy_retrieve(query, top_k=5, category=None):
-        captured_query.append(query)
-        return original_retrieve(query, top_k=top_k, category=category)
-
-    monkeypatch.setattr("app.core.rag.corrective_rag.retrieve", _spy_retrieve)
-
-    messages = [
-        {"role": "user", "content": "earlier question"},
-        {"role": "assistant", "content": "earlier answer"},
-        {"role": "user", "content": "What is diabetes?"},
-    ]
-    _ = [t async for t in stream_rag_chat(messages, temperature=0.5, max_tokens=50)]
-    assert captured_query[-1] == "What is diabetes?"
-
 ```
 
 ---
@@ -15096,7 +15109,6 @@ async def test_blank_llm_response_defaults():
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(svc, "title_llm", _llm_returning("   "))
         assert await generate_thread_title("I have a fever") == DEFAULT_TITLE
-
 ```
 
 ---
@@ -15201,7 +15213,6 @@ async def test_groq_network_failure_propagates(monkeypatch):
     )
     with pytest.raises(Exception):
         await transcribe_audio(b"fake-audio-bytes", "audio/webm")
-
 ```
 
 ---

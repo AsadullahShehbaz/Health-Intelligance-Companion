@@ -39,6 +39,7 @@ export const api = {
   get: (path) => request(path, { method: 'GET' }),
   post: (path, body) => request(path, { method: 'POST', body: JSON.stringify(body) }),
   put: (path, body) => request(path, { method: 'PUT', body: JSON.stringify(body) }),
+  patch: (path, body) => request(path, { method: 'PATCH', body: JSON.stringify(body) }),
   del: (path) => request(path, { method: 'DELETE' }),
 };
 
@@ -49,6 +50,14 @@ export const getAuthHeaders = () => {
   const token = getAccessToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
 };
+
+export async function fetchPatientMemories(patientId) {
+  return api.get(`/memory/patient/${patientId}`);
+}
+
+export async function updatePatientMemory(patientId, memoryId, updateData) {
+  return api.patch(`/memory/patient/${patientId}/${memoryId}`, updateData);
+}
 
 // Backwards-compat default export for existing imports
 export default api;

@@ -26,7 +26,9 @@ router = APIRouter(prefix="/agent", tags=["Agent"])
 
 
 @router.post("/invoke", response_model=AgentResponse)
-async def invoke(req: AgentRequest):
+async def invoke(req: AgentRequest,user: User = Depends(get_current_user)):
+    if req.patient_id != str(user.id):
+        raise HTTPException(403, "Cannot act on another patient's record")
     start = time.monotonic()
     logger.info(
         "▶ POST /agent/invoke | patient=%s | thread=%s | OCR=%s",

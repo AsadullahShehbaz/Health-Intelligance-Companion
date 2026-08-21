@@ -1,14 +1,12 @@
 from pydantic import ConfigDict
 from pydantic_settings import BaseSettings
 
-
 class Settings(BaseSettings):
 
     # LangSmith Configs
-    LANGCHAIN_TRACING_V2: str = "true"
+    LANGCHAIN_TRACING_V2: str = "True"
     LANGCHAIN_API_KEY: str
-    LANGCHAIN_PROJECT: str = "default"
-
+    LANGCHAIN_PROJECT: str 
 
     # ── Database ──────────────────────────────────────────────────────────
     DATABASE_URL: str
@@ -25,10 +23,10 @@ class Settings(BaseSettings):
     VERIFY_TOKEN_EXPIRE_HOURS: int = 48            # email-verify token TTL
 
     # ── Model & CORS (sensible dev defaults) ──────────────────────────────
-    LLM_MODEL: str = r"C:\Users\jason\.cache\models\biomistral-Q4_K_M.gguf"
-    LLM_BASE_URL: str = "http://127.0.0.1:8080/v1"
-    LLM_API_KEY: str = "api-key"
-    CORS_ORIGINS: list[str] = ["http://localhost:5173"]
+    LLM_MODEL: str 
+    LLM_BASE_URL: str
+    LLM_API_KEY: str 
+    CORS_ORIGINS: list[str] 
 
     # ── Email / SMTP (leave unset for dev — emails are logged to console) ─
     SMTP_HOST: str = ""

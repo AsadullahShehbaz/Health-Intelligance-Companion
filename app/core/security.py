@@ -105,19 +105,7 @@ def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-# ======================================================================
-# Access control
-# ======================================================================
-    try:
-        payload = decode_access_token(token)
-        user_id: str | None = payload.get("sub")
-        token_version: int | None = payload.get("token_version")
-        if user_id is None:
-            logger.warning("Token decoded but 'sub' claim missing")
-            raise credentials_exception
-    except Exception:
-        logger.warning("Security get_current_user — token validation failed")
-        raise credentials_exception
+
 
 
 
