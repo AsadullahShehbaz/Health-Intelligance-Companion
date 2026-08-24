@@ -111,3 +111,5 @@ Thumbs.db
 # Jupyter / IPyNotebook Artifacts
 .ipynb_checkpoints/
 *-checkpoint.ipynb
+codebase_context.md
+contextBuilder.py
