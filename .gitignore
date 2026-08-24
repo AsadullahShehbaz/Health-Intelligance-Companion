@@ -14,7 +14,8 @@ logs.txt
 *.key
 *.cert
 secrets.json
-
+contextBuilder.py
+codebase_context.md
 # Python & AI/ML / Deep Learning Artifacts
 __pycache__/
 *.py[cod]
