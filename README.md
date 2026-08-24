@@ -1,278 +1,589 @@
-# AI-Powered Personal Health Intelligence Companion
+# 🩺 Health Intelligence Companion
 
-**Final Year Project (BSCS) — AI/ML Engineering Track**
+An empathetic, multilingual AI health companion for Pakistani users — combining a **fine-tuned BioMistral LLM**, a **LangGraph multi-agent pipeline**, **RAG over a medical knowledge base**, **long-term patient memory**, **OCR for lab reports/prescriptions**, and **voice interaction** — served through a FastAPI backend and a React 19 + Tailwind frontend.
 
-A conversational medical AI system that combines a fine-tuned medical LLM, retrieval-augmented generation, multimodal OCR, and persistent structured patient memory to give patients holistic, history-aware health guidance — not just single-turn symptom lookup.
-
-> **Scope note:** The current implementation is **100% English**. Urdu/Roman-Urdu support described in the original proposal is a future-work item, not part of the present build (see [Deviations from the Original Proposal](#deviations-from-the-original-proposal)).
+> Built as an end-to-end applied ML/AI engineering project: from dataset curation and LLM fine-tuning (Kaggle) → GGUF quantization → local inference → production agent orchestration, RAG, and full-stack deployment.
 
 ---
 
-## 1. Problem Statement
+## ✨ Features
 
-Patients — particularly in under-resourced healthcare systems — struggle to communicate their full medical context to doctors in a short consultation window. Decisions often get made on a few minutes of verbal symptom description, with no structured access to prior prescriptions, lab reports, lifestyle factors, or emotional state. Generic chatbot-style AI tools don't solve this: they answer the current message in isolation and forget everything the moment the session ends.
-
-## 2. Solution Overview
-
-This system is a **patient-memory-first medical assistant**. Every conversation turn:
-
-1. Extracts and stores durable, structured facts about the patient (identity, symptoms, medications, lab results, lifestyle, emotional state) into a persistent memory store.
-2. Decides — via an LLM router — whether the current query needs external medical knowledge (internal vector DB or live web search).
-3. Generates a final, empathetic answer using a **domain-fine-tuned medical LLM**, grounded in the patient's accumulated history, any OCR'd documents, and retrieved medical context.
-
-The result is a system that reasons **holistically** — cross-referencing active symptoms against current medications, lifestyle, and lab results — rather than answering each message as a stateless Q&A pair.
+- **🎯 Fine-tuned medical LLM** — BioMistral-7B, QLoRA fine-tuned on an 83K-example curated dataset, quantized to GGUF and served locally. *([full write-up below](#-fine-tuning-pipeline-biomistral-7b--qlora--gguf))*
+- **🔍 Agent-gated RAG** — a tool-calling router decides per-turn whether to query a 5,844-document Qdrant knowledge base and/or the live web, so retrieval only fires when it's actually needed. *([full write-up below](#-retrieval-augmented-generation-rag))*
+- **Multi-stage agent graph (LangGraph)** — `Remember → RAG Router → Tools → Chat`, giving clean separation between memory extraction, retrieval decisions, and final response generation.
+- **Long-term structured patient memory** — every turn is scanned for atomic, category-tagged facts (identity, symptoms, medications, lab results, lifestyle, emotional state) with deduplication and supersession logic, so the assistant reasons holistically instead of re-asking what it already knows.
+- **OCR for medical documents** — lab reports and prescriptions (images) are parsed via a vision LLM into structured clinical text, then merged into the conversation context.
+- **Voice mode** — speech-to-text (Groq Whisper) and streaming text-to-speech (Edge TTS) for hands-free interaction.
+- **Full auth system** — JWT access tokens + rotating, hashed-at-rest opaque refresh tokens, with revocation on logout.
+- **Persistent, resumable conversations** — LangGraph checkpointing (Postgres) means every thread can be restored, listed, and inspected turn-by-turn.
+- **Memory dashboard** — patients can view and edit the structured facts the system has stored about them.
 
 ---
 
-## 3. Core Technologies
+## 🏗️ Architecture
 
-| Layer | Technology | Notes |
-|---|---|---|
-| Diagnostic / Chat LLM | **BioMistral-7B, fine-tuned (QLoRA) on a 10K-sample medical instruction dataset** | Served locally via `llama.cpp` / GGUF (`llama_cpp_python`), exposed as an OpenAI-compatible endpoint and consumed through `langchain_openai.ChatOpenAI` |
-| Orchestration / Router LLM | `openai/gpt-oss-120b` via **Groq** | Used for tool-routing (RAG decision) and structured-output memory extraction — fast, cheap, and reliable for tool-calling, keeping the fine-tuned model dedicated to the final diagnostic response |
-| Agent Framework | **LangGraph** | Stateful, checkpointed multi-node graph (see [Architecture](#4-agent-architecture)) |
-| Vector Database | **Qdrant (Cloud instance)** | Stores the medical knowledge base (disease info, MedQA, PubMed-derived content) for RAG |
-| Embeddings | `sentence-transformers/all-MiniLM-L6-v2` | Used for both RAG document retrieval and semantic memory-relevance ranking |
-| Relational / Checkpoint DB | **PostgreSQL — Neon (Cloud, serverless/autosuspending)** | Backs (a) LangGraph's conversation checkpointer, (b) LangGraph's long-term memory `Store`, and (c) the SQLAlchemy `users` / `refresh_tokens` / `tokens` auth tables |
-| OCR / Vision | **Groq-hosted Qwen VLM** (`qwen/qwen3.6-27b` via `langchain_groq.ChatGroq`) | Extracts structured clinical text (diagnosis, meds, lab values, vitals) from photographed prescriptions and lab reports |
-| Web Search Fallback | SerpAPI | Corrective-RAG fallback when internal knowledge base retrieval is weak/insufficient |
-| Backend API | **FastAPI** (async) | JWT + refresh-token auth, streaming chat, and agent endpoints |
-| Frontend | **React 19 + Vite + Tailwind CSS v4** | Chat UI, conversation sidebar, auth modals |
-| Testing / Eval | `pytest`, ROUGE, BERTScore, custom hallucination/grounding rubric | Compares fine-tuned-only vs. RAG-augmented responses |
+### High-Level System Architecture
 
----
+```mermaid
+flowchart TD
+    subgraph Frontend["🌐 Frontend (React 19 + Tailwind)"]
+        UI[Chat UI / Voice Modal / Memory Dashboard]
+        Auth[Auth Context / JWT Management]
+    end
 
-## 4. Agent Architecture
+    subgraph Backend["⚙️ Backend (FastAPI)"]
+        API[API Routes: /agent, /auth, /chat, /voice, /memory]
+        Agent[LangGraph Agent Orchestrator]
+        Checkpointer[(Postgres Checkpointer)]
+    end
 
-The core reasoning engine is a **LangGraph state machine** with three primary nodes, compiled once at startup and checkpointed to Postgres so every conversation is resumable across requests.
+    subgraph AgentGraph["🧠 LangGraph Agent Graph"]
+        Remember[🧠 Remember Node<br/>Extract & Deduplicate Patient Facts]
+        Router[🔀 RAG Router Node<br/>Tool-Calling Decision]
+        Tools[🔧 Tools Node<br/>Execute Retrieval]
+        Chat[💬 Chat Node<br/>BioMistral Local GGUF]
+    end
 
-```
-                 ┌──────────────┐
-   user input →  │   Remember   │   (gpt-oss-120b, structured output)
-                 └──────┬───────┘
-                        │ remembered_context (categorized patient memory)
-                        ▼
-                 ┌──────────────┐
-                 │  RAG Router  │   (gpt-oss-120b, tool-calling)
-                 └──────┬───────┘
-                needs tools?  \
-                     yes       no
-                      │         │
-                      ▼         │
-                 ┌──────────┐   │
-                 │  Tools   │   │   retrieve_medical_knowledge (Qdrant)
-                 └────┬─────┘   │   search_web_medical (SerpAPI, corrective fallback)
-                      │         │
-                      ▼         ▼
-                 ┌──────────────────┐
-                 │  Chat (BioMistral)│   final empathetic, grounded answer
-                 └──────────────────┘
-                          │
-                          ▼
-                         END
-```
+    subgraph Memory["💾 Memory & Knowledge"]
+        PatientMem[(Patient Memory<br/>Qdrant + Postgres)]
+        KnowledgeBase[(Medical Knowledge Base<br/>Qdrant: 5,844 docs)]
+        WebSearch[🌐 Web Search<br/>SerpAPI]
+    end
 
-### 4.1 Node 1 — `remember_node` (Memory Extraction)
+    subgraph External["☁️ External Services"]
+        Groq[Groq API<br/>Router LLM + Whisper + Vision]
+        EdgeTTS[Edge TTS<br/>Streaming Speech]
+        LocalLLM[Local LLM Server<br/>llama.cpp / BioMistral GGUF]
+    end
 
-Runs on **every** turn, before routing or retrieval.
-
-- Loads the patient's existing memories from the Postgres-backed LangGraph `Store`.
-- Sends the user's latest message (+ any OCR'd document text) to `gpt-oss-120b` with a **structured-output schema** (`MemoryDecision` → list of `MemoryItem`).
-- Each extracted fact is tagged with a **category** (`identity`, `symptom`, `medication`, `lab_result`, `lifestyle`, `emotional`), a **status** (`active` / `resolved` / `historical`), and optional `severity` / `onset`.
-- **Supersession, not duplication:** if a new fact updates an existing one (e.g. "headache is gone" → resolves a stored headache record; "headache is worse" → updates severity in place), the LLM references the original record's key via `supersedes_id` and the existing row is updated rather than a duplicate being appended. This keeps the patient's timeline as one-row-per-fact instead of accumulating contradictions.
-- **Scaling (Phase 4 optimization):** identity facts always survive into the prompt; everything else is recency-prefiltered to a candidate pool, then ranked by cosine similarity (via the shared embedder) against the turn's topic, and capped — so a patient with hundreds of stored facts still produces a bounded, relevant context block instead of blowing the LLM's context window.
-
-### 4.2 Node 2 — `rag_router_node` (Retrieval Routing)
-
-- A **tool-calling** Groq LLM (`gpt-oss-120b`, `bind_tools`) decides whether the turn needs external medical knowledge.
-- Triggers tools for any medical symptom/question; skips tools for purely conversational turns (greetings, thanks, identity questions already answered by memory).
-- Emits LangGraph `tool_calls`, which are executed by a `ToolNode` wrapping two tools:
-  - **`retrieve_medical_knowledge`** — direct vector search against the Qdrant `health_knowledge` collection (top-k, cosine similarity, score-thresholded).
-  - **`search_web_medical`** — SerpAPI web search, used as a **corrective RAG** fallback when internal retrieval confidence is low or the query is out-of-distribution (e.g. "latest WHO guidance on mpox").
-
-### 4.3 Node 3 — `biomistral_node` (Chat / Diagnosis Generation)
-
-- The **only node that calls the fine-tuned BioMistral model.**
-- Assembles a single clean system prompt containing:
-  - Categorized **patient memory** (IDENTITY / ACTIVE SYMPTOMS / MEDICATIONS / LAB RESULTS / LIFESTYLE / EMOTIONAL STATE / RESOLVED HISTORY)
-  - **OCR context** from any uploaded document (capped to avoid blowing the context window)
-  - **Retrieved medical context** from the tools step
-- Prompt explicitly instructs the model to **cross-reference categories** — e.g. check active symptoms against current medications before suggesting new ones, factor in lifestyle/emotional state, and weight severity/onset for urgency — rather than only pattern-matching the latest message.
-- Guards against hallucination: never invents patient facts, never claims something was saved when memory writes failed, treats retrieved context as supporting (not guaranteed) information.
-
-### 4.4 Why gpt-oss-120b for routing/memory but BioMistral for the final answer?
-
-Tool-calling and structured JSON extraction benefit from a fast, reliable, general-purpose model — Groq's `gpt-oss-120b` is used here purely as **infrastructure** (deciding *whether* to retrieve, and *what facts* to store). The actual **medical answer generation** — the part that needs domain expertise — is delegated entirely to the **fine-tuned BioMistral model**, keeping the fine-tuning investment focused on the task it's specialized for.
-
----
-
-## 5. Model Fine-Tuning
-
-- **Base model:** BioMistral-7B (medical-domain pretrained Mistral variant)
-- **Method:** QLoRA (parameter-efficient fine-tuning)
-- **Training data:** 10,000 curated medical instruction samples
-- **Serving:** Quantized GGUF checkpoint (Q4_K_M) served locally via `llama.cpp` / `llama-server`, exposed through an OpenAI-compatible `/v1` endpoint and consumed via `langchain_openai.ChatOpenAI` (`app/core/llm.py`)
-
-### 5.1 Evaluation Methodology
-
-`app/eval/` contains a full evaluation harness comparing **fine-tuned-only** vs. **RAG-augmented** generation across three query categories:
-
-| Category | Count | Purpose |
-|---|---|---|
-| In-distribution | 30 | Standard clinical Q&A (symptoms, causes, diagnosis, treatment) with reference answers, scored via ROUGE-1/2/L and BERTScore |
-| Out-of-distribution | 12 | Recency-dependent questions (e.g. latest WHO/CDC guidance) with no ground truth — tests whether corrective RAG web-fallback kicks in |
-| Ambiguous | 8 | Vague, real-world patient phrasing ("I have chest pain.") — reference answers describe the *appropriate response pattern* (acknowledge + advise care) rather than a diagnosis |
-
-Metrics captured per case: **ROUGE-1/2/L**, **BERTScore F1**, latency, retrieval decision, and average retrieval confidence score. A separate `hallucination_check.py` rubric grades groundedness of answers against retrieved sources on a 0–2 scale. Perplexity comparison (`run_perplexity.py`) further quantifies how much retrieved context improves the model's confidence on reference answers.
-
----
-
-## 6. Persistent Patient Memory
-
-Unlike a stateless chatbot, this system maintains a **structured, evolving patient profile** across sessions, stored in PostgreSQL (Neon) via LangGraph's `Store` abstraction, namespaced per patient.
-
-Each memory record carries:
-```
-{
-  "text": "Persistent headache, worsening",
-  "category": "symptom",       // identity | symptom | medication | lab_result | lifestyle | emotional
-  "status": "active",          // active | resolved | historical
-  "severity": "moderate",
-  "onset": "3 days ago"
-}
+    UI --> API
+    Auth --> API
+    API --> Agent
+    Agent --> Checkpointer
+    Agent --> Remember
+    Remember --> PatientMem
+    Remember --> Router
+    Router -->|needs retrieval| Tools
+    Router -->|no tools needed| Chat
+    Tools --> KnowledgeBase
+    Tools --> WebSearch
+    Tools --> Chat
+    Chat --> LocalLLM
+    Chat --> PatientMem
+    Chat --> API
+    API --> Groq
+    API --> EdgeTTS
 ```
 
-When BioMistral generates a response, it sees this memory formatted into labeled sections and is explicitly instructed to reason **across** them — e.g. don't recommend a medication that conflicts with something in MEDICATIONS, weight LIFESTYLE and EMOTIONAL STATE alongside physical symptoms, and treat RESOLVED HISTORY as background only.
+### Agent Graph Flow (Per Turn)
+
+```mermaid
+flowchart TD
+    Start([User Message + Context]) --> Remember
+    Remember -->|Extract facts\nUpdate memory| Router
+    Router -->|Tool calls needed| Tools
+    Router -->|No tools needed| Chat
+    Tools -->|Retrieved context| Chat
+    Chat -->|Generate response| End([Final Response])
+    
+    style Remember fill:#e3f2fd,stroke:#1976d2
+    style Router fill:#fff3e0,stroke:#f57c00
+    style Tools fill:#e8f5e9,stroke:#388e3c
+    style Chat fill:#fce4ec,stroke:#c2185b
+    style Start fill:#f3e5f5,stroke:#7b1fa2
+    style End fill:#f3e5f5,stroke:#7b1fa2
+```
+
+### RAG Router Decision Logic
+
+```mermaid
+flowchart TD
+    Input[User Message] --> Analyze{Medical/Health\nKeywords?}
+    Analyze -->|Yes| CheckTools{Which Tools?}
+    Analyze -->|No| Skip[Skip Retrieval]
+    CheckTools -->|Internal KB| Qdrant[Query Qdrant\nVector Search]
+    CheckTools -->|Current/External| SerpAPI[Search Web\nSerpAPI]
+    CheckTools -->|Both| Both[Qdrant + SerpAPI]
+    Qdrant --> Merge[Merge & Format Results]
+    SerpAPI --> Merge
+    Both --> Merge
+    Merge --> RouterOut[Return to Router Node]
+    Skip --> RouterOut
+    
+    style Analyze fill:#fff3e0,stroke:#f57c00
+    style CheckTools fill:#fff3e0,stroke:#f57c00
+    style Skip fill:#e8f5e9,stroke:#388e3c
+    style Merge fill:#e3f2fd,stroke:#1976d2
+```
+
+### Memory Extraction & Deduplication Flow
+
+```mermaid
+flowchart TD
+    Turn[New Conversation Turn] --> Extract[LLM Extracts\nAtomic Facts]
+    Extract --> Categorize[Categorize Facts:\nIdentity, Symptoms, Meds,\nLabs, Lifestyle, Emotion]
+    Categorize --> Dedup{Duplicate\nExists?}
+    Dedup -->|Yes| Compare{New Info\nSupersedes?}
+    Dedup -->|No| Store[Store New Fact]
+    Compare -->|Yes| Update[Update Existing Fact]
+    Compare -->|No| Discard[Discard New Fact]
+    Update --> Persist[Persist to Qdrant + Postgres]
+    Store --> Persist
+    Discard --> Persist
+    Persist --> NextTurn[Available for\nNext Turn Context]
+    
+    style Extract fill:#e3f2fd,stroke:#1976d2
+    style Categorize fill:#e3f2fd,stroke:#1976d2
+    style Dedup fill:#fff3e0,stroke:#f57c00
+    style Compare fill:#fff3e0,stroke:#f57c00
+    style Persist fill:#e8f5e9,stroke:#388e3c
+```
+
+- **Remember** extracts and deduplicates structured patient facts each turn.
+- **RAG Router** (Groq, tool-calling) decides whether internal medical knowledge and/or a live web search are needed for *this* message — purely conversational turns skip retrieval entirely.
+- **Tools** execute the selected retrievals (Qdrant vector search / SerpAPI) and flatten results into plain-text context.
+- **Chat** is the locally-hosted, fine-tuned BioMistral model, which produces the final response using patient memory + OCR + retrieved context, cross-referencing categories (e.g. checking active medications before suggesting new ones).
 
 ---
 
-## 7. Multimodal Input (OCR)
+## 🧰 Tech Stack
 
-- Endpoint: `POST /agent/invoke` accepts an optional `image_base64` (prescription photo, lab report scan).
-- OCR is performed via **Groq's Qwen VLM** (`app/core/rag/ocr.py`), prompted to extract structured clinical fields (patient details, diagnosis, symptoms, vitals, lab values with units, medications with dosages, doctor instructions) while explicitly avoiding speculation on unreadable text (`[unclear]` marker).
-- OCR runs **outside the LangGraph graph**, at the API layer — so raw Base64 image payloads never enter LangGraph checkpoints (which are persisted to Postgres). Only the extracted, structured text is passed into graph state, keeping checkpoint storage lean.
-- Extracted OCR text feeds both `remember_node` (to persist medication/lab facts) and `biomistral_node` (to answer questions about the uploaded document directly).
-
----
-
-## 8. Data Layer
-
-| Concern | Backend | Details |
-|---|---|---|
-| Conversation state / checkpointing | **PostgreSQL (Neon, Cloud)** via `langgraph.checkpoint.postgres.PostgresSaver` | Every graph turn is checkpointed; the conversation sidebar (`/agent/threads`) is derived **directly from checkpoint rows** — there is no separate conversations table |
-| Long-term patient memory | **PostgreSQL (Neon, Cloud)** via `langgraph.store.postgres.PostgresStore` | Namespaced `(patient_memories, patient_id)` key-value store for structured `MemoryItem` records |
-| Vector search / RAG knowledge base | **Qdrant (Cloud)** | `health_knowledge` collection; retrieval filtered/scored via cosine similarity, `score_threshold=0.3` |
-| App/auth data (users, tokens) | **PostgreSQL (Neon)** via async SQLAlchemy | Standard relational tables: `users`, `refresh_tokens`, `tokens` |
-
-**Neon autosuspend handling:** Because Neon's free/serverless tier suspends an idle compute, both the checkpointer/store connection pool (`app/db/pool.py`) and the Qdrant client wrap queries in a bounded retry with backoff to transparently absorb the "cold start" reconnect without failing the user's request.
+| Layer | Technology |
+|---|---|
+| **LLM orchestration** | LangGraph, LangChain, LangSmith (tracing) |
+| **Local inference** | Fine-tuned BioMistral, quantized to GGUF, served via `llama.cpp` / OpenAI-compatible endpoint |
+| **Routing / tool-calling** | Groq (`ChatGroq`, tool-calling model) |
+| **Vector search** | Qdrant + `sentence-transformers/all-MiniLM-L6-v2` |
+| **Web search** | SerpAPI |
+| **OCR / Vision** | Groq vision model for medical document extraction |
+| **Speech** | Groq Whisper (STT), Edge TTS (streaming TTS) |
+| **Backend** | FastAPI, SQLAlchemy (async), Alembic, Postgres, JWT auth |
+| **Frontend** | React 19, Vite, Tailwind CSS 4 |
+| **Testing** | pytest (`unit` / `integration` / `live` markers), pytest-asyncio, pytest-cov |
+| **ML experimentation** | Jupyter notebooks (data collection → cleaning → generation → fine-tuning → GGUF conversion → RAG KB build), Kaggle |
 
 ---
 
-## 9. Authentication & Security
-
-- **JWT access tokens** (short-lived, default 60 min) + **opaque refresh tokens** (7 days, SHA-256 hashed at rest, rotated on every refresh, individually revocable).
-- Passwords hashed with **Argon2**.
-- Enforced password policy (length, character classes, common-password blocklist) — shared source of truth between backend validation and frontend UX hints.
-- Role-based access control via `require_role` dependency.
-- Full register / login / refresh / logout flow with structured auth-event logging.
-
----
-
-## 10. Backend API Surface
-
-| Endpoint | Method | Purpose |
-|---|---|---|
-| `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/logout`, `/auth/me` | POST/GET | Auth lifecycle |
-| `/agent/invoke` | POST | Main entry point — runs the full LangGraph pipeline (memory → routing → tools → BioMistral), optionally with an attached image for OCR |
-| `/agent/threads` | GET | Sidebar list of the patient's conversations, derived from checkpoints |
-| `/agent/threads/{thread_id}` | GET | Full transcript of one conversation |
-| `/chat/stream` | POST | Lightweight streaming chat (no agent pipeline — direct BioMistral streaming) |
-| `/rag/stream` | POST | Streaming chat with single-shot corrective RAG (no memory/agent graph) |
-
----
-
-## 11. Project Structure
+## 📁 Project Structure
 
 ```
-app/
-├── agent/
-│   ├── graph.py              # LangGraph state machine wiring (Remember → Router → Tools? → Chat)
-│   ├── state.py               # AgentState TypedDict (shared graph state)
-│   ├── tools.py                # retrieve_medical_knowledge, search_web_medical
-│   ├── memory_schema.py       # MemoryItem / MemoryDecision Pydantic schemas
-│   └── nodes/
-│       ├── remember_node.py    # Memory extraction, supersession, semantic selection
-│       ├── router_node.py      # RAG tool-routing
-│       ├── biomistral_node.py  # Final answer generation
-│       └── prompts.py          # BioMistral system prompt template
-├── api/                        # FastAPI routers (auth, agent, chat, rag)
-├── core/
-│   ├── llm.py                  # BioMistral OpenAI-compatible client
-│   ├── security.py             # JWT / Argon2 / refresh-token primitives
-│   └── rag/
-│       ├── embedder.py         # SentenceTransformer singleton
-│       ├── qdrant_store.py     # Qdrant Cloud client + retrieval
-│       ├── rag_tool.py         # Direct RAG wrapper
-│       ├── corrective_rag.py   # Confidence-gated web-search fallback
-│       └── ocr.py              # Groq Qwen VLM document extraction
-├── db/                          # SQLAlchemy engine + LangGraph Postgres pools/lifespan
-├── models/, schemas/            # ORM models & Pydantic request/response schemas
-├── services/                    # agent_service, chat_service, rag_chat_service, conversation_service
-├── eval/                        # Evaluation harness (ROUGE, BERTScore, perplexity, hallucination rubric)
-└── tests/                       # Unit + integration + live test suites (pytest markers: unit/integration/live)
-
-frontend/                        # React 19 + Vite + Tailwind chat UI
+.
+├── app/
+│   ├── agent/           # LangGraph nodes, state, tools, memory schema
+│   ├── api/              # FastAPI routers (auth, chat, agent, voice, memory)
+│   ├── core/              # LLM client, RAG (embedder/OCR/Qdrant), security
+│   ├── db/                # Async session, connection pool, checkpointer lifespan
+│   ├── models/            # SQLAlchemy models (user, tokens)
+│   ├── schemas/           # Pydantic request/response schemas
+│   ├── services/          # Business logic (chat, agent, memory, voice, titles)
+│   └── tests/             # App-level tests
+├── frontend/               # React 19 + Vite + Tailwind SPA
+│   └── src/
+│       ├── components/     # Chat UI, voice modal, memory dashboard, sidebar, auth modals
+│       ├── context/        # Auth & conversations React context
+│       └── utils/          # API client, session, formatting helpers
+├── notebooks/              # Full ML pipeline: data collection → cleaning → generation →
+│                           # fine-tuning → GGUF conversion → RAG KB build → voice agent
+├── tests/                  # Top-level test suite (agent, api, core, db, services)
+├── contextBuilder.py       # Utility that generates a full codebase context dump
+├── requirements.txt
+└── pyproject.toml
 ```
 
 ---
 
-## 12. Local Setup
+## 🚀 Getting Started
 
-**Prerequisites:** Python 3.11+, Node.js, a running BioMistral GGUF server (`llama.cpp`), and Cloud credentials for Neon Postgres, Qdrant, and Groq.
+### Prerequisites
+- Python 3.11+
+- Node.js 18+
+- Postgres database
+- A running local LLM server (llama.cpp / any OpenAI-compatible endpoint) hosting the fine-tuned BioMistral GGUF model
+- API keys: Groq, SerpAPI, Qdrant Cloud (or self-hosted), LangSmith, HuggingFace
+
+### 1. Backend setup
 
 ```bash
-# Backend
-pip install -r requirements.txt --break-system-packages
-cp .env.example .env   # fill in DATABASE_URL, QDRANT_URL, QDRANT_API_KEY,
-                        #     GROQ_API_KEY, SERP_API_KEY, SECRET_KEY, LLM_BASE_URL, etc.
-uvicorn app.main:app --reload
+git clone <your-repo-url>
+cd <repo>
+python -m venv venv
+source venv/bin/activate      # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+```
 
-# Frontend
+Create a `.env` file in the project root:
+
+```env
+# LangSmith
+LANGCHAIN_TRACING_V2=True
+LANGCHAIN_API_KEY=your_langsmith_key
+LANGCHAIN_PROJECT=health-companion
+
+# Database & Vector Store
+DATABASE_URL=postgresql+asyncpg://user:pass@host:5432/dbname
+QDRANT_URL=https://your-qdrant-cluster-url
+QDRANT_API_KEY=your_qdrant_key
+
+# Auth
+HF_TOKEN=your_huggingface_token
+SECRET_KEY=change_me_to_a_random_secret
+
+# Local LLM (BioMistral GGUF, served OpenAI-compatible)
+LLM_MODEL=biomistral
+LLM_BASE_URL=http://localhost:8080/v1
+LLM_API_KEY=not-needed-for-local-server
+
+# CORS
+CORS_ORIGINS=["http://localhost:5173"]
+
+# Third-party APIs
+SERP_API_KEY=your_serpapi_key
+GROQ_API_KEY=your_groq_key
+GROQ_MODEL=openai/gpt-oss-120b
+```
+
+Run the API:
+
+```bash
+uvicorn app.main:app --reload
+```
+
+The API will be available at `http://localhost:8000` (interactive docs at `/docs`).
+
+### 2. Frontend setup
+
+```bash
 cd frontend
 npm install
 npm run dev
 ```
 
-Required environment variables (see `app/config.py`): `DATABASE_URL`, `QDRANT_URL`, `QDRANT_API_KEY`, `HF_TOKEN`, `SECRET_KEY`, `GROQ_API_KEY`, `SERP_API_KEY`, `LLM_MODEL`, `LLM_BASE_URL`, `LLM_API_KEY`.
+The app will be available at `http://localhost:5173`.
 
----
-
-## 13. Testing
+### 3. Running tests
 
 ```bash
-pytest -m unit           # fast, fully mocked
-pytest -m integration     # ASGI client + mocked externals + sqlite
-RUN_LIVE_TESTS=1 pytest -m live   # requires real Postgres/Qdrant/LLM
+pytest                          # all tests
+pytest -m unit                  # fast, fully-mocked unit tests
+pytest -m integration           # ASGI client + mocked external services
+RUN_LIVE_TESTS=1 pytest -m live # requires real Postgres/Qdrant/LLM
+pytest --cov=app --cov-report=term-missing
 ```
 
 ---
 
-## 14. Deviations from the Original Proposal
+## 🔌 API Overview
 
-| Proposal | Current Implementation |
-|---|---|
-| Urdu + English support | **English only** (current build); Urdu/Roman-Urdu is future work |
-| Generic "fine-tuned medical LLM" | **BioMistral-7B, QLoRA fine-tuned on 10,000 samples** |
-| "RAG pipeline" (unspecified backend) | **Qdrant Cloud** vector store + corrective web-search fallback (SerpAPI) |
-| "PostgreSQL for persistent memory" | **Neon (managed Postgres Cloud)**, used for both LangGraph checkpoints and long-term memory `Store` |
-| "OCR for handwritten prescriptions" | **Groq-hosted Qwen VLM**, structured clinical-field extraction |
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/auth/register` | Create an account, returns access + refresh tokens |
+| `POST` | `/auth/login` | Authenticate, returns access + refresh tokens |
+| `POST` | `/auth/refresh` | Rotate a refresh token for a new token pair |
+| `POST` | `/auth/logout` | Revoke a refresh token |
+| `GET`  | `/auth/me` | Current authenticated user |
+| `POST` | `/agent/invoke` | Run one turn through the full agent graph (supports optional OCR image) |
+| `GET`  | `/agent/threads` | List a patient's conversation threads (sidebar) |
+| `GET`  | `/agent/threads/{thread_id}` | Full transcript of one conversation |
+| `POST` | `/chat/stream` | Raw streaming chat completion (bypasses the agent graph) |
+| `GET`  | `/memory/patient/{patient_id}` | Fetch categorized patient memories |
+| `PATCH`| `/memory/patient/{patient_id}/{memory_id}` | Edit a stored memory record |
+| `POST` | `/voice/interact` | Local mic capture → agent → spoken response |
+| `POST` | `/voice/stt` | Transcribe an uploaded audio clip |
+| `POST` | `/voice/tts` | Synthesize and stream speech from text |
+| `POST` | `/voice/stop` | Stop any in-progress audio playback |
 
 ---
 
-## 15. Future Work
+## 🎯 Fine-Tuning Pipeline (BioMistral-7B → QLoRA → GGUF)
 
-- Urdu / Roman-Urdu language support (translation layer or multilingual fine-tune)
-- Voice input (speech-to-text) integration mentioned in the original proposal but not yet implemented
-- Expanded fine-tuning dataset beyond 10K samples, with continued RAG-vs-fine-tuned comparative evaluation
-- Doctor-facing dashboard / structured export of patient memory for real clinical handoff
-- Formal clinical validation and hallucination-rate benchmarking at scale
+### Pipeline Overview
+
+```mermaid
+flowchart LR
+    subgraph Data["📊 Data Preparation"]
+        Collect[Data Collection\nMultiple Sources]
+        Clean[Cleaning &\nDeduplication]
+        Merge[Merging &\nFormatting]
+        Generate[Synthetic\nData Generation]
+        Validate[Validation Split\n9,043 examples]
+    end
+
+    subgraph Training["🏋️ Fine-Tuning (QLoRA)"]
+        Base[BioMistral-7B\nBase Model]
+        Quantize[4-bit Quantization\nBitsAndBytes nf4]
+        LoRA[LoRA Adapters\nr=16, α=32]
+        Train[Training\n42M params / 3.8B]
+    end
+
+    subgraph Deploy["🚀 Deployment"]
+        MergeAdapters[Merge Adapters\ninto Base Weights]
+        Convert[Convert to GGUF\nQuantize Q4_K_M]
+        Publish[Publish to HF Hub\nasadullahshehbaz/biomistral-health-gguf]
+        Serve[Local Server\nllama.cpp OpenAI-compatible]
+    end
+
+    Collect --> Clean --> Merge --> Generate --> Validate
+    Validate --> Base
+    Base --> Quantize --> LoRA --> Train
+    Train --> MergeAdapters --> Convert --> Publish --> Serve
+    
+    style Base fill:#f3e5f5,stroke:#7b1fa2
+    style Train fill:#fff3e0,stroke:#f57c00
+    style Serve fill:#e8f5e9,stroke:#388e3c
+```
+
+### QLoRA Configuration Details
+
+```mermaid
+flowchart TD
+    Config[QLoRA Config] --> Quant[4-bit Quantization\nnf4 + Double Quant]
+    Config --> LoRAConf[LoRA Config\nr=16, α=32, dropout=0.05]
+    Config --> Target[Target Modules:\nq_proj, k_proj, v_proj, o_proj\ngate_proj, up_proj, down_proj]
+    Config --> Compute[Compute Dtype: float16]
+    Config --> Trainable[Trainable Params: ~42M / 3.8B\n≈ 1.1%]
+    
+    style Config fill:#e3f2fd,stroke:#1976d2
+    style Trainable fill:#fce4ec,stroke:#c2185b
+```
+
+---
+
+## 🔍 Retrieval-Augmented Generation (RAG)
+
+### RAG Pipeline Overview
+
+```mermaid
+flowchart TD
+    subgraph Build["🏗️ Knowledge Base Build (Offline)"]
+        Sources[Data Sources:\nDisease DB, PubMedQA,\nChatDoctor]
+        Embed[Embed with\nMiniLM-L6-v2\n384-dim]
+        Index[Index in Qdrant\nCosine Distance\n5,844 documents]
+        Payload[Metadata:\nsource, category, disease]
+    end
+
+    subgraph Runtime["⚡ Runtime Retrieval"]
+        Query[User Query] --> EmbedQuery[Embed Query\nSame MiniLM]
+        EmbedQuery --> Search[Vector Search\nscore_threshold=0.3]
+        Search --> Filter[Optional Category\nFilter]
+        Filter --> Retry{Retry on\nFailure?}
+        Retry -->|Yes| Search
+        Retry -->|No| Format[Format Results\nSource-tagged]
+    end
+
+    subgraph Agentic["🤖 Agentic Routing"]
+        Router[Groq Router LLM\nTool-Calling] --> Decide{Need\nRetrieval?}
+        Decide -->|Yes| ToolCall[Call Tools:\nQdrant / SerpAPI]
+        Decide -->|No| Skip[Skip Retrieval]
+        ToolCall --> Flatten[Flatten & Tag\n[source]: text]
+        Flatten --> ChatCtx[Pass to Chat Node]
+        Skip --> ChatCtx
+    end
+
+    Sources --> Embed --> Index --> Payload
+    Payload -.->|Runtime| Search
+    ChatCtx --> Final[Final BioMistral\nResponse with Citations]
+    
+    style Sources fill:#e3f2fd,stroke:#1976d2
+    style Router fill:#fff3e0,stroke:#f57c00
+    style Final fill:#e8f5e9,stroke:#388e3c
+```
+
+### Knowledge Base Composition
+
+```mermaid
+pie title Knowledge Base: 5,844 Documents
+    "ChatDoctor (Patient Cases)" : 4944
+    "PubMedQA (Research)" : 500
+    "Disease DB (Triples)" : 400
+```
+
+### Agentic Router Tool Decision
+
+```mermaid
+flowchart TD
+    Message[User Message] --> Router[Router LLM\nGroq gpt-oss-120b]
+    Router --> Analyze[Analyze Intent:\nMedical? Symptoms? Meds?]
+    Analyze --> Decision{Tools Needed?}
+    Decision -->|Pure Chat| NoTools[No Tool Calls\nDirect to Chat Node]
+    Decision -->|Medical Query| Tools[Available Tools:]
+    Tools --> Tool1[🔍 retrieve_medical_knowledge\n→ Qdrant Vector Search]
+    Tools --> Tool2[🌐 search_web_medical\n→ SerpAPI Web Search]
+    Tool1 --> Execute[Execute Selected Tools]
+    Tool2 --> Execute
+    Execute --> Results[Return Formatted\nContext to Router]
+    Results --> ChatNode[Chat Node Receives\nMemory + Context]
+    NoTools --> ChatNode
+    
+    style Router fill:#fff3e0,stroke:#f57c00
+    style Decision fill:#fff3e0,stroke:#f57c00
+    style ChatNode fill:#e8f5e9,stroke:#388e3c
+```
+
+---
+
+## 🎙️ Voice Interaction Flow
+
+```mermaid
+flowchart TD
+    subgraph Input["🎤 Voice Input"]
+        Mic[User Speaks] --> Capture[Capture Audio\nFrontend MediaRecorder]
+        Capture --> STT[STT: Groq Whisper\nTranscribe Audio]
+    end
+
+    subgraph Processing["🧠 Agent Processing"]
+        STT --> Agent[/agent/invoke\nFull Agent Graph]
+        Agent --> RememberV[Remember Node]
+        RememberV --> RouterV[RAG Router]
+        RouterV --> ToolsV[Tools if Needed]
+        ToolsV --> ChatV[Chat Node\nBioMistral]
+        ChatV --> Response[Text Response]
+    end
+
+    subgraph Output["🔊 Voice Output"]
+        Response --> TTS[TTS: Edge TTS\nStreaming Synthesis]
+        TTS --> Stream[Stream Audio Chunks\nto Frontend]
+        Stream --> Playback[Browser Audio\nPlayback]
+    end
+
+    style STT fill:#e3f2fd,stroke:#1976d2
+    style Agent fill:#fff3e0,stroke:#f57c00
+    style TTS fill:#e8f5e9,stroke:#388e3c
+    style Playback fill:#fce4ec,stroke:#c2185b
+```
+
+## 🧪 Full ML Pipeline (Notebooks)
+
+### Notebook Pipeline Flow
+
+```mermaid
+flowchart LR
+    subgraph Phase1["📥 Phase 1: Data Engineering"]
+        NB1[1_data_collection.ipynb]
+        NB2[2_data_cleaning.ipynb]
+        NB3[3_data_merging.ipynb]
+        NB4[4_data_generation.ipynb]
+        NB4_1[4.1_data_generation.ipynb]
+        NB7[7_urdu-data-collection.ipynb]
+    end
+
+    subgraph Phase2["🏋️ Phase 2: Model Training"]
+        NB5[5_model_training.ipynb\nQLoRA Fine-tuning]
+    end
+
+    subgraph Phase3["🚀 Phase 3: Inference & Deployment"]
+        NB9[9_training_to_inference.ipynb]
+        NB11[11_convert-to-gguf.ipynb]
+    end
+
+    subgraph Phase4["🔍 Phase 4: RAG & Memory"]
+        NB12[12_build-rag-kb.ipynb\nQdrant Indexing]
+        NB14[14_memory-store.ipynb\nLangGraph Memory]
+    end
+
+    subgraph Phase5["🎙️ Phase 5: Voice"]
+        NB15[15_voice_agent.ipynb\nSTT/TTS Prototype]
+        NBV[voice-agent.py\nIntegration]
+    end
+
+    NB1 --> NB2 --> NB3 --> NB4 --> NB4_1
+    NB7 --> NB4_1
+    NB4_1 --> NB5
+    NB5 --> NB9 --> NB11
+    NB11 -.->|GGUF Model| Production[Production Serving]
+    NB3 -.->|Clean Data| NB12
+    NB12 --> NB14
+    NB14 -.->|Memory Schema| Production
+    NB15 --> NBV
+    NBV -.->|Voice Service| Production
+    
+    style NB5 fill:#fff3e0,stroke:#f57c00
+    style NB11 fill:#e8f5e9,stroke:#388e3c
+    style NB12 fill:#e3f2fd,stroke:#1976d2
+    style Production fill:#f3e5f5,stroke:#7b1fa2
+```
+
+---
+
+## 📷 OCR for Medical Documents
+
+```mermaid
+flowchart TD
+    Upload[User Uploads Image\nLab Report / Prescription] --> Vision[Groq Vision Model\nExtract Structured Text]
+    Vision --> Parse[Parse & Structure:\n- Patient Info\n- Test Results\n- Medications\n- Doctor Notes]
+    Parse --> Context[Merge into\nConversation Context]
+    Context --> Agent[Agent Graph\nProcess with Context]
+    Agent --> Response[Response References\nOCR Data]
+    
+    style Vision fill:#e3f2fd,stroke:#1976d2
+    style Parse fill:#fff3e0,stroke:#f57c00
+    style Agent fill:#e8f5e9,stroke:#388e3c
+```
+
+## 🔐 Authentication Flow
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Frontend
+    participant Backend
+    participant DB[(Postgres)]
+
+    User->>Frontend: Enter credentials
+    Frontend->>Backend: POST /auth/login
+    Backend->>DB: Verify user + hash
+    DB-->>Backend: User record
+    Backend->>Backend: Generate JWT access token (15m)
+    Backend->>Backend: Generate opaque refresh token
+    Backend->>DB: Store hashed refresh token + expiry
+    Backend-->>Frontend: Access token + Refresh token (httpOnly cookie)
+    Frontend->>Frontend: Store access token in memory
+    
+    Note over Frontend,Backend: Subsequent Requests
+    
+    Frontend->>Backend: API Request + Authorization: Bearer <access>
+    Backend->>Backend: Validate JWT signature + expiry
+    Backend-->>Frontend: Protected resource
+    
+    Note over Frontend,Backend: Token Refresh
+    
+    Frontend->>Backend: POST /auth/refresh + Refresh cookie
+    Backend->>DB: Lookup hashed refresh token
+    DB-->>Backend: Token record (valid, not revoked)
+    Backend->>Backend: Revoke old, issue new pair
+    Backend->>DB: Store new hashed refresh token
+    Backend-->>Frontend: New access + refresh tokens
+    
+    Note over Frontend,Backend: Logout
+    
+    Frontend->>Backend: POST /auth/logout + Refresh cookie
+    Backend->>DB: Mark refresh token revoked
+    Backend-->>Frontend: 204 No Content
+```
+
+---
+
+## 📌 Roadmap
+
+- [ ] Automated evaluation suite (retrieval quality, response safety/factuality, latency) — *coming soon*
+- [ ] Multi-turn voice conversation streaming
+- [ ] Expanded Urdu/Roman-Urdu evaluation coverage
+
+---
+
+## ⚠️ Disclaimer
+
+This project is an educational/portfolio AI system and is **not a certified medical device**. It does not replace professional medical advice, diagnosis, or treatment. Always consult a qualified healthcare provider for medical concerns.
+
+---
+
+## 👤 Author
+
+Built by **Asad Ullah** — BSCS student, Kaggle Notebooks & Datasets Grandmaster, with hands-on experience across two remote ML internships. This project reflects an applied AI/ML engineering journey covering data engineering, LLM fine-tuning, RAG, agentic systems, and full-stack deployment.
+
+- Kaggle: [kaggle.com/asadullahcreative](https://www.kaggle.com/asadullahcreative)
+
+---
+
+## 📄 License
+
+This project is licensed under the MIT License — see the `LICENSE` file for details.
