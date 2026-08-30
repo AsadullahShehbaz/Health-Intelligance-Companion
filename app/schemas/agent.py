@@ -8,6 +8,7 @@ class AgentRequest(BaseModel):
     patient_id: str
     query: str = ""
     image_base64: Optional[str] = None
+    pdf_base64: Optional[str] = None
     thread_id: Optional[str] = None
 
 

@@ -16,6 +16,7 @@ from app.schemas.agent import (
     ConversationMeta,
 )
 from app.core.rag.ocr import extract_text_from_base64
+from app.core.rag.pdf_ocr import extract_text_from_pdf_base64
 from app.services.agent_service import run_agent
 from app.services.conversation_service import get_conversation, list_conversations
 from app.utils.logging_config import get_logger
@@ -31,16 +32,26 @@ async def invoke(req: AgentRequest,user: User = Depends(get_current_user)):
         raise HTTPException(403, "Cannot act on another patient's record")
     start = time.monotonic()
     logger.info(
-        "▶ POST /agent/invoke | patient=%s | thread=%s | OCR=%s",
+        "▶ POST /agent/invoke | patient=%s | thread=%s | OCR=%s | PDF=%s",
         req.patient_id,
         req.thread_id or "(default)",
         "yes" if req.image_base64 else "no",
+        "yes" if req.pdf_base64 else "no",
     )
     try:
         ocr_text = ""
         if req.image_base64:
             ocr_text = extract_text_from_base64(req.image_base64)
             logger.info("OCR extraction completed | chars=%d", len(ocr_text))
+        if req.pdf_base64:
+            pdf_text = extract_text_from_pdf_base64(req.pdf_base64)
+            logger.info("PDF extraction completed | chars=%d", len(pdf_text))
+            if pdf_text:
+                ocr_text = (
+                    f"{ocr_text}\n\n--- Extracted from attached PDF ---\n{pdf_text}"
+                    if ocr_text
+                    else pdf_text
+                )
         result = await run_agent(req, ocr_text)
         logger.info(
             "✓ POST /agent/invoke completed in %.2fs | patient=%s",

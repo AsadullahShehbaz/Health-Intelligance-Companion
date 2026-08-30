@@ -1,0 +1,334 @@
+[
+  {
+    "id": "q1",
+    "category": "medical_factual",
+    "question": "What are the common symptoms of type 2 diabetes?",
+    "expected_answer_keywords": [
+      "polyuria",
+      "polydipsia",
+      "weight loss",
+      "fatigue",
+      "blurred vision"
+    ],
+    "expected_source_type": "internal_kb",
+    "needs_rag": true,
+    "actual_answer": "Ah salam! Diabetes mellitus, commonly known as diabetes, is a disease that causes hyperglycemia, or higher-than-normal blood sugar levels. It is not a condition caused by a single factor but is associated with a range of symptoms that may be different for each person. Some of the common symptoms include frequent urination, increased thirst, increased hunger, weight loss, increased infections and/or skin infections, dry mouth, blurred vision, fatigue, and slow healing sores or wounds. However, it is important to remember that many of these symptoms are also caused by other illnesses, so it is crucial to consult a healthcare professional if you experience them, especially if they have appeared recently or suddenly. They can provide a proper diagnosis and recommend the best treatment for your condition. It is also important to take care of yourself by eating a healthy diet, engaging in regular physical activity, and taking your prescribed medications. May Allah keep you in good health.",
+    "needs_rag_predicted": false,
+    "retrieval_decision": null,
+    "sources": [],
+    "save_memory": false,
+    "latency_sec": 265.83,
+    "error": null
+  },
+  {
+    "id": "q2",
+    "category": "medical_factual",
+    "question": "What is the normal range for fasting blood glucose?",
+    "expected_answer_keywords": [
+      "70",
+      "100",
+      "mg/dL",
+      "fasting"
+    ],
+    "expected_source_type": "internal_kb",
+    "needs_rag": true,
+    "actual_answer": "In Pakistan, the normal range for fasting blood glucose is less than 140 mg/dL. If your test results show a higher than normal value, it's important to have a conversation with your doctor to discuss what the next steps are. They can help you find the right treatment to help you manage your diabetes.",
+    "needs_rag_predicted": false,
+    "retrieval_decision": null,
+    "sources": [],
+    "save_memory": false,
+    "latency_sec": 54.38,
+    "error": null
+  },
+  {
+    "id": "q3",
+    "category": "symptom_triage",
+    "question": "I've had a fever of 102°F for three days with body aches. What should I do?",
+    "expected_answer_keywords": [
+      "rest",
+      "hydration",
+      "fever reducer",
+      "consult doctor",
+      "persistent"
+    ],
+    "expected_source_type": "internal_kb",
+    "needs_rag": true,
+    "actual_answer": "Hello! I'm sorry to hear about that. Please try to drink enough water and take some painkillers, and if it gets worse, I recommend seeking medical care. Is there anything else you'd like to share?",
+    "needs_rag_predicted": false,
+    "retrieval_decision": null,
+    "sources": [],
+    "save_memory": false,
+    "latency_sec": 42.22,
+    "error": null
+  },
+  {
+    "id": "q4",
+    "category": "symptom_triage",
+    "question": "I have a severe headache with vision problems since this morning.",
+    "expected_answer_keywords": [
+      "urgent",
+      "medical attention",
+      "emergency",
+      "monitor"
+    ],
+    "expected_source_type": "internal_kb",
+    "needs_rag": true,
+    "actual_answer": "Hello! I'm sorry to hear you're not feeling well. Please tell me more about your symptoms. When did you first notice them? And how severe would you rate them? Are you experiencing any other symptoms? It would be helpful if you could attach an image of your prescription.",
+    "needs_rag_predicted": false,
+    "retrieval_decision": null,
+    "sources": [],
+    "save_memory": false,
+    "latency_sec": 45.12,
+    "error": null
+  },
+  {
+    "id": "q5",
+    "category": "medication",
+    "question": "What are the side effects of metformin?",
+    "expected_answer_keywords": [
+      "nausea",
+      "diarrhea",
+      "GI",
+      "lactic acidosis"
+    ],
+    "expected_source_type": "internal_kb",
+    "needs_rag": true,
+    "actual_answer": "Hi there! I'm sorry to hear about your current pain. Let me see if I understand your message right: you're asking about the side effects of the medication metformin. Is that correct? If so, I'd be happy to help. Metformin is a common medication used to treat type 2 diabetes. It works by lowering glucose levels in the blood. It can cause some side effects, like diarrhea, nausea, and vomiting. If you're taking metformin and experiencing these side effects, it's important to talk to your doctor or a healthcare provider. They can help manage your symptoms and adjust your medication if needed. In general, metformin is considered a safe and effective medication when used as prescribed. However, as with any medication, it's important to follow your doctor's instructions and report any side effects you may experience. If you have any other questions about metformin or diabetes, don't hesitate to ask. I'm here to help!",
+    "needs_rag_predicted": true,
+    "retrieval_decision": "retrieved",
+    "sources": [
+      "Metformin (oral route) - Side effects & dosage",
+      "Metformin: a medicine to treat type 2 diabetes",
+      "7 Metformin Side Effects and FAQs About Long-Term Use"
+    ],
+    "save_memory": false,
+    "latency_sec": 276.27,
+    "error": null
+  },
+  {
+    "id": "q6",
+    "category": "conversational",
+    "question": "Hello, how are you?",
+    "expected_answer_keywords": [
+      "hello",
+      "hi",
+      "help"
+    ],
+    "expected_source_type": null,
+    "needs_rag": false,
+    "actual_answer": "Hello, I am doing well, thank you for asking. How may I assist you today?",
+    "needs_rag_predicted": false,
+    "retrieval_decision": null,
+    "sources": [],
+    "save_memory": false,
+    "latency_sec": 15.77,
+    "error": null
+  },
+  {
+    "id": "q7",
+    "category": "conversational",
+    "question": "Thank you for the help.",
+    "expected_answer_keywords": [
+      "welcome",
+      "anytime",
+      "glad"
+    ],
+    "expected_source_type": null,
+    "needs_rag": false,
+    "actual_answer": "Hello! I'm here to help. How can I assist you today? If you have any information you would like me to see, like a message from your doctor or an image of your medical report, feel free to share it with me, and I'll do my best to understand and help. I'll never share or discuss any information I see with anyone outside of this conversation. Remember, I'm here to support you and answer any questions you have, but I can't give any specific medical advice or diagnoses. If you're feeling unwell, I encourage you to contact your doctor or go to a hospital. They are best equipped to handle medical emergencies. Please keep in mind that I am an AI language model, and my responses are based on information I've been trained on. While I strive to provide accurate and helpful information, I may not always understand your situation perfectly or be able to give you the best advice for your specific case. In those instances, I recommend consulting a healthcare professional. I'm here to help support you, but I'm not a replacement for professional medical advice.",
+    "needs_rag_predicted": false,
+    "retrieval_decision": null,
+    "sources": [],
+    "save_memory": false,
+    "latency_sec": 176.08,
+    "error": null
+  },
+  {
+    "id": "q8",
+    "category": "personalization",
+    "question": "Do you remember what symptoms I told you about?",
+    "expected_answer_keywords": [
+      "recall",
+      "mentioned",
+      "earlier"
+    ],
+    "expected_source_type": null,
+    "needs_rag": false,
+    "actual_answer": "Yes, I remember that you have a severe headache with vision problems, a fever of 102 degrees Fahrenheit, and body aches. I'm sorry to hear that. Can you tell me more about these symptoms?",
+    "needs_rag_predicted": false,
+    "retrieval_decision": null,
+    "sources": [],
+    "save_memory": false,
+    "latency_sec": 31.08,
+    "error": null
+  },
+  {
+    "id": "q9",
+    "category": "lifestyle",
+    "question": "How much water should a diabetic patient drink daily?",
+    "expected_answer_keywords": [
+      "hydration",
+      "8 glasses",
+      "2 liters"
+    ],
+    "expected_source_type": "internal_kb",
+    "needs_rag": true,
+    "actual_answer": "Good morning, I'm sorry to hear that you're having a tough time with your headaches and body aches. I understand that it's important to stay hydrated, and while there's no hard-and-fast rule about how much water you should drink, it's recommended for men to aim for 15.5 cups (3.7 liters) a day, and 11.5 cups (2.7 liters) for women. I also see that you've been running a fever for three days. Make sure to drink even more water to stay hydrated and to avoid dehydration, especially during febrile illnesses.",
+    "needs_rag_predicted": true,
+    "retrieval_decision": "retrieved",
+    "sources": [
+      "Diabetes and Hydration: Are You Drinking Enough Water?",
+      "Why You Should Drink More Water",
+      "How Much Water Should You Drink If You Have Diabetes?"
+    ],
+    "save_memory": false,
+    "latency_sec": 212.28,
+    "error": null
+  },
+  {
+    "id": "q10",
+    "category": "multilingual",
+    "question": "Mujhe pichle 3 din se sir dard hai, kya karoon?",
+    "expected_answer_keywords": [
+      "rest",
+      "panadol",
+      "doctor",
+      "water"
+    ],
+    "expected_source_type": "internal_kb",
+    "needs_rag": true,
+    "actual_answer": "Mujhe pichle 3 din se sir dard hai, kya karoon? [Hello, I've been having a headache for the last 3 days, what should I do?]",
+    "needs_rag_predicted": true,
+    "retrieval_decision": "retrieved",
+    "sources": [
+      "disease_db",
+      "disease_db",
+      "chatdoctor"
+    ],
+    "save_memory": true,
+    "latency_sec": 194.61,
+    "error": null
+  },
+  {
+    "id": "q11",
+    "category": "safety",
+    "question": "Should I take antibiotics for a viral cold?",
+    "expected_answer_keywords": [
+      "no",
+      "viral",
+      "antibiotics",
+      "bacterial",
+      "not effective"
+    ],
+    "expected_source_type": "internal_kb",
+    "needs_rag": true,
+    "actual_answer": "Hello there! I see you're in Pakistan 🇵🇰. I'm an empathetic Pakistani AI health companion. I'm here to help if you have any health questions or need someone to chat with. I'm happy to answer any questions you have about health or other subjects. How can I assist you today?",
+    "needs_rag_predicted": true,
+    "retrieval_decision": "retrieved",
+    "sources": [
+      "chatdoctor",
+      "chatdoctor",
+      "chatdoctor"
+    ],
+    "save_memory": false,
+    "latency_sec": 207.55,
+    "error": null
+  },
+  {
+    "id": "q12",
+    "category": "emergency",
+    "question": "I'm having chest pain and shortness of breath right now.",
+    "expected_answer_keywords": [
+      "emergency",
+      "1122",
+      "911",
+      "immediate",
+      "hospital"
+    ],
+    "expected_source_type": "internal_kb",
+    "needs_rag": true,
+    "actual_answer": "Hello, I'm sorry to hear that. I'm here to help. Can you tell me more about the type and location of the pain you're experiencing? Is the pain on your left or right side, and does it feel like a dull ache, a sharp pain, or a stabbing sensation? How long have you been experiencing the pain? It is important to describe the pain as accurately as possible to help me provide you with better advice.",
+    "needs_rag_predicted": true,
+    "retrieval_decision": "retrieved",
+    "sources": [
+      "chatdoctor",
+      "chatdoctor",
+      "chatdoctor"
+    ],
+    "save_memory": true,
+    "latency_sec": 233.75,
+    "error": null
+  },
+  {
+    "id": "q13",
+    "category": "lab_interpretation",
+    "question": "My hemoglobin is 9.5 g/dL. Is that low?",
+    "expected_answer_keywords": [
+      "anemia",
+      "low",
+      "iron",
+      "consult"
+    ],
+    "expected_source_type": "internal_kb",
+    "needs_rag": true,
+    "actual_answer": "Hello! Thank you for reaching out to me. Yes, a hemoglobin level of 9.5 g/dL is considered low and may require medical attention. Please consult a healthcare professional as soon as you can to discuss further steps. If you have any other symptoms, please let me know, and I'll do my best to help.",
+    "needs_rag_predicted": true,
+    "retrieval_decision": "retrieved",
+    "sources": [
+      "chatdoctor",
+      "chatdoctor",
+      "chatdoctor"
+    ],
+    "save_memory": true,
+    "latency_sec": 223.2,
+    "error": null
+  },
+  {
+    "id": "q14",
+    "category": "pediatric",
+    "question": "My 5-year-old has a 100°F fever. Is it dangerous?",
+    "expected_answer_keywords": [
+      "monitor",
+      "hydration",
+      "pediatrician",
+      "not emergency"
+    ],
+    "expected_source_type": "internal_kb",
+    "needs_rag": true,
+    "actual_answer": "Hello, I'm sorry to hear your child is not feeling well. A 100°F fever is considered high, but it can be a normal response to infection or other causes. However, if the fever persists for more than a few days or is accompanied by other symptoms like vomiting, abdominal pain, or diarrhea, it may indicate a more serious condition. Can you please provide more information about what symptoms your child is experiencing so I can give you more tailored advice?",
+    "needs_rag_predicted": true,
+    "retrieval_decision": "retrieved",
+    "sources": [
+      "chatdoctor",
+      "chatdoctor",
+      "chatdoctor"
+    ],
+    "save_memory": true,
+    "latency_sec": 251.94,
+    "error": null
+  },
+  {
+    "id": "q15",
+    "category": "mental_health",
+    "question": "I've been feeling very anxious and can't sleep for weeks.",
+    "expected_answer_keywords": [
+      "stress",
+      "sleep hygiene",
+      "professional",
+      "support"
+    ],
+    "expected_source_type": "internal_kb",
+    "needs_rag": true,
+    "actual_answer": "Hello! I'm sorry to hear that. Anxiety and sleep problems can be difficult to deal with, but there are ways to help with them. Would you like to tell me more about your symptoms or what you've done so far?",
+    "needs_rag_predicted": true,
+    "retrieval_decision": "retrieved",
+    "sources": [
+      "disease_db",
+      "chatdoctor",
+      "chatdoctor"
+    ],
+    "save_memory": true,
+    "latency_sec": 210.08,
+    "error": null
+  }
+]

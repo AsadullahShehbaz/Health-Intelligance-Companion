@@ -1,6 +1,9 @@
 # User-specified paths
 .env 
-
+.claude/
+rag_eval_results/
+docs/
+.deepeval/
 notebooks/
 gradio-app/
 llama.cpp/

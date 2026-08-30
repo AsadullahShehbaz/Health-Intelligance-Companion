@@ -4,6 +4,7 @@ import { api, getStreamUrl, getAuthHeaders } from "../utils/api";
 import { ensureFreshToken } from "../utils/session";
 import { API_BASE } from "../utils/config";
 import { fileToImageData } from "../utils/image";
+import { fileToPdfData } from "../utils/pdf";
 import { formatRelativeTime } from "../utils/time";
 import VoiceAssistantModal from "./VoiceAssistantModal";
 import ChatVoiceInput from "./ChatVoiceInput";
@@ -291,7 +292,7 @@ export default function ChatWindow({ onOpenSidebar }) {
 
   const [input, setInput] = useState("");
   const [mode, setMode] = useState("agent");
-  const [image, setImage] = useState(null);
+  const [attachment, setAttachment] = useState(null);
   const [showVoice, setShowVoice] = useState(false);
   const bottomRef = useRef(null);
   const textareaRef = useRef(null);
@@ -346,13 +347,14 @@ export default function ChatWindow({ onOpenSidebar }) {
     }
   };
 
-  const runAgent = async (text, attachedImage) => {
+  const runAgent = async (text, attached) => {
     const payload = {
       patient_id: patientId,
       query: text,
       thread_id: activeThreadId,
     };
-    if (attachedImage) payload.image_base64 = attachedImage.base64;
+    if (attached?.kind === "image") payload.image_base64 = attached.base64;
+    if (attached?.kind === "pdf") payload.pdf_base64 = attached.base64;
 
     const data = await api.post("/agent/invoke", payload);
 
@@ -373,18 +375,18 @@ export default function ChatWindow({ onOpenSidebar }) {
     if (!text.trim() || busy) return null;
 
     const userMsg = { role: "user", content: text };
-    if (image) userMsg.imageDataUrl = image.dataUrl;
+    if (attachment?.kind === "image") userMsg.imageDataUrl = attachment.dataUrl;
     const history = [...messages, userMsg];
-    const attachedImage = image;
+    const attached = attachment;
 
     setMessages(history);
     setInput("");
-    setImage(null);
+    setAttachment(null);
     setSending(true);
 
     try {
       if (mode === "agent") {
-        const assistantMsg = await runAgent(text, attachedImage);
+        const assistantMsg = await runAgent(text, attached);
         setMessages([...history, assistantMsg]);
         refreshList();
         return assistantMsg;
@@ -395,7 +397,7 @@ export default function ChatWindow({ onOpenSidebar }) {
       }
     } catch (err) {
       console.error("Chat error:", err);
-      const extra = mode === "agent" && attachedImage
+      const extra = mode === "agent" && attached
         ? " The agent endpoint needs a running server with the LangGraph stack (checkpointer + Qdrant)."
         : "";
       setMessages([
@@ -420,10 +422,19 @@ export default function ChatWindow({ onOpenSidebar }) {
     e.target.value = "";
     if (!file) return;
     try {
-      const img = await fileToImageData(file);
-      setImage(img);
+      if (file.type === "application/pdf") {
+        const pdf = await fileToPdfData(file);
+        setAttachment({ kind: "pdf", ...pdf });
+      } else {
+        const img = await fileToImageData(file);
+        setAttachment({ kind: "image", ...img });
+      }
     } catch (err) {
-      console.error("Image read failed:", err);
+      console.error("Attachment read failed:", err);
+      setAttachment(null);
+      if (err?.message) {
+        alert(err.message);
+      }
     }
   };
 
@@ -553,19 +564,25 @@ export default function ChatWindow({ onOpenSidebar }) {
             </span>
           </div>
 
-          {image && (
+          {attachment && (
             <div className="flex items-center gap-2 mb-2 bg-[#2f2f2f] rounded-xl border border-white/10 px-3 py-2 w-fit">
-              <img src={image.dataUrl} alt="Attached preview" className="h-10 w-10 object-cover rounded-lg border border-white/10" />
+              {attachment.kind === "image" ? (
+                <img src={attachment.dataUrl} alt="Attached preview" className="h-10 w-10 object-cover rounded-lg border border-white/10" />
+              ) : (
+                <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-white/10 bg-blue-500/10 text-blue-200 text-xs font-semibold">
+                  PDF
+                </div>
+              )}
               <div className="text-xs text-gray-400 max-w-[180px] truncate">
-                <span className="text-gray-200 font-medium">{image.name}</span>
+                <span className="text-gray-200 font-medium">{attachment.name}</span>
                 <span className="block text-[10px] text-gray-600">
                   {mode === "agent" ? "OCR will read the text" : "Only used in Agent mode"}
                 </span>
               </div>
               <button
-                onClick={() => setImage(null)}
+                onClick={() => setAttachment(null)}
                 className="p-1 rounded-md text-gray-500 hover:text-gray-200 hover:bg-white/5 transition-colors"
-                title="Remove image"
+                title="Remove attachment"
               >
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -579,7 +596,7 @@ export default function ChatWindow({ onOpenSidebar }) {
               onClick={() => fileInputRef.current?.click()}
               disabled={busy}
               className="ml-2 mb-3.5 p-2 rounded-lg text-gray-500 hover:text-gray-200 hover:bg-white/5 transition-colors disabled:opacity-40"
-              title="Attach an image (OCR in Agent mode)"
+              title="Attach an image or PDF (OCR in Agent mode)"
             >
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M2.25 15.75l5.159-5.159a2.25 2.25 0 013.182 0l5.159 5.159m-1.5-1.5l1.409-1.409a2.25 2.25 0 013.182 0l2.909 2.909M3.75 21h16.5A2.25 2.25 0 0022.5 18.75V5.25A2.25 2.25 0 0020.25 3H3.75A2.25 2.25 0 001.5 5.25v13.5A2.25 2.25 0 003.75 21zm9.75-12h.008v.008h-.008V9z" />
@@ -588,7 +605,7 @@ export default function ChatWindow({ onOpenSidebar }) {
             <input
               ref={fileInputRef}
               type="file"
-              accept="image/*"
+              accept="image/*,application/pdf"
               onChange={handleFileChange}
               className="hidden"
             />

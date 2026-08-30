@@ -15,8 +15,8 @@ EXCLUDE_DIRS = {
     ".venv",
     "llama.cpp",
     "gradio-app",
-    "notebooks",
-    "docs",
+    ".deepeval",
+    "MedQuAD"
 }
 
 # Files or extensions to skip
@@ -42,7 +42,7 @@ EXCLUDE_EXTENSIONS = {
     ".gz",
     ".sqlite3",
     ".db",
-    ".md",
+    ".csv"
 }
 
 

@@ -45,6 +45,29 @@ def retrieve(
         top_k,
     )
 
+    return retrieve_with_metadata(query, top_k=top_k, category=category)
+
+
+def retrieve_with_metadata(
+    query: str,
+    top_k: int = 5,
+    category: str | None = None,
+    score_threshold: float | None = 0.3,
+) -> list[dict]:
+    """Retrieve documents while preserving identifiers for evaluation.
+
+    ``retrieve`` remains the production-compatible API. This diagnostic
+    variant exposes the Qdrant point ID and allows an unthresholded query so
+    evaluation code can distinguish ranking misses from threshold loss.
+    """
+
+    logger.info(
+        "Searching Qdrant | collection=%s | top_k=%d | threshold=%s",
+        COLLECTION,
+        top_k,
+        score_threshold,
+    )
+
     # Generate embedding
     vector = embedder.encode(
         query,
@@ -77,7 +100,7 @@ def retrieve(
                 query_filter=query_filter,
                 limit=top_k,
                 with_payload=True,
-                score_threshold=0.3,
+                score_threshold=score_threshold,
             )
             break
         except Exception as e:
@@ -94,6 +117,7 @@ def retrieve(
 
     docs = [
         {
+            "point_id": str(r.id),
             "text": r.payload.get("text", ""),
             "source": r.payload.get("source", ""),
             "category": r.payload.get("category", ""),

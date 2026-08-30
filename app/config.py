@@ -28,6 +28,21 @@ class Settings(BaseSettings):
     LLM_API_KEY: str 
     CORS_ORIGINS: list[str] 
 
+    # ── Evaluation / RAG defaults ──────────────────────────────────────────
+    QDRANT_COLLECTION: str = "medical_knowledge_base"
+    EMBEDDING_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
+    SIMILARITY_THRESHOLD: float = 0.3
+    TOP_K: int = 5
+    MAX_NEW_TOKENS: int = 400
+    TEST_DATA_PATH: str = "evals/test_200.json"
+    OUTPUT_DIR: str = "rag_eval_results"
+
+    # ── PDF input limits ────────────────────────────────────────────────────
+    PDF_MAX_SIZE_MB: int = 10
+    PDF_MAX_PAGES: int = 8
+    PDF_MAX_VISION_PAGES: int = 3
+    PDF_NATIVE_TEXT_MIN_CHARS: int = 40
+
     # ── Email / SMTP (leave unset for dev — emails are logged to console) ─
     SMTP_HOST: str = ""
     SMTP_PORT: int = 587

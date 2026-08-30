@@ -56,11 +56,8 @@ def parse_base64_payload(raw_b64_string: str) -> Tuple[str, str]:
     return "image/jpeg", raw_b64_string.strip()
 
 
-def extract_text_from_base64(image_b64: str) -> str:
-    """
-    Extracts structured text from medical documents, lab reports, and prescriptions
-    using Groq LLaMA 3.2 Vision via LangChain.
-    """
+def run_vision_extraction(image_b64: str, mime_type: str | None = None) -> str:
+    """Actual Groq vision call + prompt. Shared by OCR and PDF fallback."""
     if not image_b64:
         logger.info("OCR skipped — empty image_base64")
         return ""
@@ -68,23 +65,23 @@ def extract_text_from_base64(image_b64: str) -> str:
     logger.info("▶ Vision extraction started via Groq | raw_len=%d", len(image_b64))
 
     try:
-        # Extract MIME type and clean raw base64 data
-        mime_type, clean_b64 = parse_base64_payload(image_b64)
+        if mime_type is None:
+            mime_type, clean_b64 = parse_base64_payload(image_b64)
+        else:
+            clean_b64 = image_b64.strip()
+            if clean_b64.startswith("data:"):
+                mime_type, clean_b64 = parse_base64_payload(clean_b64)
 
-        # Reconstruct the exact Data URI string required by LLM vision specs
         formatted_data_url = f"data:{mime_type};base64,{clean_b64}"
-
-        # Get Groq client instance
         vision_llm = get_groq_vision_client()
 
-        # Construct Multimodal LangChain HumanMessage
         message = HumanMessage(
             content=[
                 {
                     "type": "text",
                     "text": (
                         """Analyze this medical image and extract only clinically relevant information.
-                        
+
                         Return concise structured text containing:
                         - Patient details
                         - Diagnosis
@@ -94,7 +91,7 @@ def extract_text_from_base64(image_b64: str) -> str:
                         - Medications and dosages
                         - Doctor instructions
                         - Important findings
-                        
+
                         Do not explain your reasoning.
                         Do not use <think>.
                         Do not speculate.
@@ -104,14 +101,11 @@ def extract_text_from_base64(image_b64: str) -> str:
                 },
                 {
                     "type": "image_url",
-                    "image_url": {
-                        "url": formatted_data_url
-                    },
+                    "image_url": {"url": formatted_data_url},
                 },
             ]
         )
 
-        # Invoke model
         response = vision_llm.invoke([message])
         extracted_text = response.content.strip()
 
@@ -124,4 +118,9 @@ def extract_text_from_base64(image_b64: str) -> str:
 
     except Exception:
         logger.exception("Groq Vision extraction failed")
-        return ""  
+        return ""
+
+
+def extract_text_from_base64(image_b64: str) -> str:
+    """Thin wrapper around the shared vision extraction logic."""
+    return run_vision_extraction(image_b64)
