@@ -347,7 +347,13 @@ def fake_store():
 
 @pytest.fixture
 def sample_state():
-    """Factory for ``AgentState`` dicts — accepts overrides."""
+    """Factory for ``AgentState`` dicts — accepts overrides.
+
+    The current turn's HumanMessage is seeded once in state at the service
+    boundary, so the router and chat nodes operate on a state that already
+    contains the user's latest message.
+    """
+    from langchain_core.messages import HumanMessage
 
     def _make(**kwargs):
         base = {
@@ -366,6 +372,8 @@ def sample_state():
             "remembered_context": "",
         }
         base.update(kwargs)
+        if "messages" not in kwargs:
+            base["messages"] = [HumanMessage(content=base["raw_input"])]
         return base
 
     return _make

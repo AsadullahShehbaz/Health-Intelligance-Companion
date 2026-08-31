@@ -298,9 +298,19 @@ export default function ChatWindow({ onOpenSidebar }) {
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
 
+  const revokeAttachmentPreview = (item) => {
+    if (item?.previewUrl && typeof URL !== "undefined" && typeof URL.revokeObjectURL === "function") {
+      URL.revokeObjectURL(item.previewUrl);
+    }
+  };
+
   const busy = historyLoading || sending;
   const current = conversations.find((c) => c.thread_id === activeThreadId);
   const headerTitle = current?.title || "New chat";
+
+  useEffect(() => {
+    return () => revokeAttachmentPreview(attachment);
+  }, [attachment]);
 
   useEffect(() => {
     const el = textareaRef.current;
@@ -421,7 +431,9 @@ export default function ChatWindow({ onOpenSidebar }) {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
+
     try {
+      revokeAttachmentPreview(attachment);
       if (file.type === "application/pdf") {
         const pdf = await fileToPdfData(file);
         setAttachment({ kind: "pdf", ...pdf });
@@ -568,6 +580,13 @@ export default function ChatWindow({ onOpenSidebar }) {
             <div className="flex items-center gap-2 mb-2 bg-[#2f2f2f] rounded-xl border border-white/10 px-3 py-2 w-fit">
               {attachment.kind === "image" ? (
                 <img src={attachment.dataUrl} alt="Attached preview" className="h-10 w-10 object-cover rounded-lg border border-white/10" />
+              ) : attachment.previewUrl ? (
+                <embed
+                  src={attachment.previewUrl}
+                  type="application/pdf"
+                  className="h-10 w-10 rounded-lg border border-white/10 bg-white/5 object-cover"
+                  title="PDF preview"
+                />
               ) : (
                 <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-white/10 bg-blue-500/10 text-blue-200 text-xs font-semibold">
                   PDF
@@ -580,7 +599,10 @@ export default function ChatWindow({ onOpenSidebar }) {
                 </span>
               </div>
               <button
-                onClick={() => setAttachment(null)}
+                onClick={() => {
+                  revokeAttachmentPreview(attachment);
+                  setAttachment(null);
+                }}
                 className="p-1 rounded-md text-gray-500 hover:text-gray-200 hover:bg-white/5 transition-colors"
                 title="Remove attachment"
               >

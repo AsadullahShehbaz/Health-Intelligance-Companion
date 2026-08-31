@@ -26,5 +26,9 @@ export async function fileToPdfData(file, opts = {}) {
   const dataUrl = await readAsDataURL(file);
   const commaIdx = dataUrl.indexOf(",");
   const base64 = commaIdx >= 0 ? dataUrl.slice(commaIdx + 1) : dataUrl;
-  return { base64, name: file.name };
+  const previewUrl = typeof URL !== "undefined" && typeof URL.createObjectURL === "function"
+    ? URL.createObjectURL(file)
+    : null;
+
+  return { base64, name: file.name, previewUrl };
 }

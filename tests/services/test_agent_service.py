@@ -16,7 +16,8 @@ def test_build_initial_state_defaults():
     assert state["raw_input"] == "hello"
     assert state["ocr_context"] == ""
     assert state["final_response"] == ""
-    assert state["messages"] == []
+    assert len(state["messages"]) == 1
+    assert state["messages"][0].content == "hello"
     assert state["tool_results"] == ""
     assert state["needs_rag"] is False
 

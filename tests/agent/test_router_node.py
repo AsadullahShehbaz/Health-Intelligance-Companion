@@ -16,18 +16,16 @@ from app.agent.nodes.router_node import ROUTER_SYSTEM_PROMPT, router_node
 
 @pytest.mark.unit
 def test_router_no_tools_stores_only_user_message(fake_llm, sample_state):
-    """When the router decides no tools are needed, only the user's
-    HumanMessage is persisted — no intermediate assistant text."""
+    """When the router decides no tools are needed, it leaves the already-seeded
+    HumanMessage in state and emits no new assistant message."""
     fake_llm.response_text = "irrelevant"
     fake_llm.tool_calls = None
 
     state = sample_state(raw_input="Hello there")
     result = router_node(state)
 
-    assert len(result["messages"]) == 1
-    assert isinstance(result["messages"][0], HumanMessage)
-    assert result["messages"][0].content == "Hello there"
-    # No answer / final_response set by the router
+    assert result["messages"] == []
+    assert state["messages"][-1].content == "Hello there"
     assert "answer" not in result
     assert "final_response" not in result
 
@@ -35,28 +33,25 @@ def test_router_no_tools_stores_only_user_message(fake_llm, sample_state):
 # ── tool-call path ────────────────────────────────────────────────────────────
 
 @pytest.mark.unit
-def test_router_tool_call_stores_user_and_ai(fake_llm, sample_state):
-    """When the router emits tool_calls, both the user message and the
-    AIMessage(tool_calls) are stored so the ToolNode can execute them."""
+def test_router_tool_call_stores_only_ai_tool_call(fake_llm, sample_state):
+    """The current user message is already seeded into state; the router
+    only needs to return the AIMessage carrying tool_calls."""
     fake_llm.tool_calls = [{"name": "retrieve_medical_knowledge", "args": {"query": "fever"}, "id": "tc1"}]
 
     state = sample_state(raw_input="I have a fever")
     result = router_node(state)
 
-    assert len(result["messages"]) == 2
-    assert isinstance(result["messages"][0], HumanMessage)
-    assert result["messages"][0].content == "I have a fever"
-    assert isinstance(result["messages"][1], AIMessage)
-    assert result["messages"][1].tool_calls  # truthy
+    assert len(result["messages"]) == 1
+    assert isinstance(result["messages"][0], AIMessage)
+    assert result["messages"][0].tool_calls  # truthy
 
 
 # ── current input appended to the LLM call ───────────────────────────────────
 
 @pytest.mark.unit
-def test_router_appends_input_when_history_ends_on_ai(fake_llm, sample_state):
-    """At the start of a turn the history ends on an assistant message, so
-    the router appends the current input to the messages it sends to the LLM.
-    The fake LLM records the last message it was invoked with."""
+def test_router_uses_seeded_human_message_when_history_ends_on_ai(fake_llm, sample_state):
+    """The current turn is already seeded in state; the router uses that
+    HumanMessage without appending a duplicate copy."""
     fake_llm.tool_calls = None
     captured = {}
     orig_invoke = fake_llm.invoke
@@ -69,7 +64,11 @@ def test_router_appends_input_when_history_ends_on_ai(fake_llm, sample_state):
 
     state = sample_state(
         raw_input="new question",
-        messages=[HumanMessage(content="old q"), AIMessage(content="old a")],
+        messages=[
+            HumanMessage(content="old q"),
+            AIMessage(content="old a"),
+            HumanMessage(content="new question"),
+        ],
     )
     router_node(state)
 
@@ -113,8 +112,8 @@ def test_router_system_prompt_interpolates_patient_id(fake_llm, sample_state):
 
 
 @pytest.mark.unit
-def test_router_empty_history_appends_input(fake_llm, sample_state):
-    """First turn ever — history is empty, router still sends the input."""
+def test_router_seeded_history_uses_current_human_message(fake_llm, sample_state):
+    """The first turn is already seeded in state as the current HumanMessage."""
     fake_llm.tool_calls = None
     captured = {}
     orig_invoke = fake_llm.invoke
@@ -125,7 +124,7 @@ def test_router_empty_history_appends_input(fake_llm, sample_state):
 
     fake_llm.invoke = _capture
 
-    state = sample_state(raw_input="first message", messages=[])
+    state = sample_state(raw_input="first message", messages=[HumanMessage(content="first message")])
     router_node(state)
 
     assert isinstance(captured["last"], HumanMessage)

@@ -38,23 +38,7 @@ def rag_router_node(state: AgentState) -> dict:
     logger.info("▶ RAG Router Node Started | patient=%s", state["patient_id"])
 
     system_msg = SystemMessage(content=ROUTER_SYSTEM_PROMPT.format(patient_id=state["patient_id"]))
-    
-    # Isolate user's current message
-    current_user_text = state.get("raw_input", "")
-    
-    # Build clean message chain for the router model:
-    # 1. System Prompt
-    # 2. Historical messages (if any)
-    # 3. Current Human Message
-    messages = [system_msg]
-    
-    existing_messages = state.get("messages", [])
-    if existing_messages:
-        messages.extend(existing_messages)
-        
-    # Append current input if it's not already the trailing message
-    if not messages or not isinstance(messages[-1], HumanMessage) or messages[-1].content != current_user_text:
-        messages.append(HumanMessage(content=current_user_text))
+    messages = [system_msg] + state.get("messages", [])
 
     start = time.monotonic()
     response = router_llm.invoke(messages)
@@ -65,11 +49,10 @@ def rag_router_node(state: AgentState) -> dict:
     if tool_calls:
         names = [tc.get("name", "?") for tc in tool_calls]
         logger.info("✓ Router successfully selected tools: %s", ", ".join(names))
-        
-        return {"messages": [HumanMessage(content=current_user_text), response]}
+        return {"messages": [response]}
 
     logger.info("ℹ Router determined query is purely conversational (no tools needed) → straight to BioMistral")
-    return {"messages": [HumanMessage(content=current_user_text)]}
+    return {"messages": []}
 
 
 router_node = rag_router_node

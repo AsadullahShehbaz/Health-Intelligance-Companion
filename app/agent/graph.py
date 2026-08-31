@@ -38,32 +38,35 @@ chat_node = biomistral_node
 def _extract_tool_metadata(tool_messages: list) -> dict:
     """Flatten this turn's ToolMessages into plain text for Chat and
     pull out the per-turn metadata flags the sidebar / response schema need.
-
-    Only the *new* tool messages (returned by the ToolNode this turn) are
-    scanned, so needs_rag reflects the current turn, not the accumulated history.
-    """
+    Sources come from each ToolMessage's .artifact instead of being re-parsed
+    out of formatted content strings."""
     extracted: list[str] = []
     rag_used = False
     sources: list[str] = []
+    retrieval_decision = ""
 
     for msg in tool_messages:
         name = getattr(msg, "name", "") or ""
         content = msg.content or ""
-
         extracted.append(f"--- Context from tool [{name}] ---\n{content}\n")
 
         if name in ("retrieve_medical_knowledge", "search_web_medical"):
             rag_used = True
-            # Parse source titles from formatted tool outputs
+            for item in (getattr(msg, "artifact", None) or []):
+                src = item.get("source") if isinstance(item, dict) else None
+                if src:
+                    sources.append(src)
+
             for line in content.splitlines():
-                match = re.match(r"^\s*\[([^\]]+)\]", line)
+                match = re.match(r"^\s*\[\s*Retrieval decision\s*:\s*(.+?)\s*\]", line, re.IGNORECASE)
                 if match:
-                    sources.append(match.group(1))
+                    retrieval_decision = match.group(1).strip().lower()
+                    break
 
     return {
         "tool_results": "\n".join(extracted),
         "needs_rag": rag_used,
-        "retrieval_decision": "retrieved" if rag_used else "",
+        "retrieval_decision": retrieval_decision or ("retrieved" if rag_used else ""),
         "retrieved_docs": [{"source": s} for s in sources[:3]],
     }
 

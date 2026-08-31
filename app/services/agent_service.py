@@ -3,6 +3,7 @@ import asyncio
 import time
 
 import psycopg
+from langchain_core.messages import HumanMessage
 from starlette.concurrency import run_in_threadpool
 
 from app.agent.graph import build_health_agent
@@ -48,7 +49,7 @@ def _build_initial_state(req: AgentRequest, ocr_text: str = "") -> dict:
         "saved_memory": False,
         "remembered_context": "",
         "tool_results": "",
-        "messages": [],
+        "messages": [HumanMessage(content=req.query)],
     }
 
 

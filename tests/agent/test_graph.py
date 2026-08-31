@@ -50,16 +50,16 @@ def test_route_to_chat_on_empty_history():
 
 @pytest.mark.unit
 def test_extract_metadata_from_rag_tool_message():
-    """needs_rag / retrieval_decision / sources are parsed from a
-    retrieve_medical_knowledge ToolMessage."""
+    """needs_rag / retrieval_decision / sources are read from tool artifacts,
+    not from regex-parsed content strings."""
     tool_msg = ToolMessage(
-        content=(
-            "[Retrieval decision: correct]\n\n"
-            "[who.int] Diabetes is a chronic condition.\n"
-            "[mayoclinic.org] Symptoms include thirst.\n"
-        ),
+        content="Internal Medical Knowledge Results:\nDiabetes is a chronic condition.",
         tool_call_id="tc1",
         name="retrieve_medical_knowledge",
+        artifact=[
+            {"source": "who.int"},
+            {"source": "mayoclinic.org"},
+        ],
     )
     meta = _extract_tool_metadata([tool_msg])
 
@@ -81,18 +81,17 @@ def test_extract_metadata_empty():
 # ── _run_tools ───────────────────────────────────────────────────────────────
 
 @pytest.mark.unit
-def test_run_tools_executes_and_extracts(monkeypatch, fake_store):
+def test_run_tools_executes_and_extracts(monkeypatch):
     """_run_tools invokes the ToolNode, appends ToolMessages, and folds the
     results into tool_results + metadata."""
     from app.agent import graph as graph_mod
-    from app.agent import tools as tools_mod
-    monkeypatch.setattr(tools_mod, "store", fake_store)
 
     def _fake_tool_node_invoke(state):
         tool_msg = ToolMessage(
             content="[Retrieval decision: correct]\n\n[who.int] Diabetes info",
             tool_call_id="call_1",
             name="retrieve_medical_knowledge",
+            artifact=[{"source": "who.int"}],
         )
         state["messages"] = state["messages"] + [tool_msg]
         return state
