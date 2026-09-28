@@ -2,6 +2,8 @@
 .env 
 .claude/
 rag_eval_results/
+contextBuilder.py 
+codebase_context.md 
 docs/
 .deepeval/
 notebooks/

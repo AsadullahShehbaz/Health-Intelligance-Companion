@@ -10,7 +10,7 @@ logger = get_logger(__name__)
 
 # Initialize ChatGroq Vision Model lazily / globally
 _groq_vision_llm = None
-
+VISION_LLM = "qwen/qwen3.8-27b"
 
 def get_groq_vision_client() -> ChatGroq:
     """Lazy initialization for ChatGroq Vision Client."""
@@ -22,7 +22,7 @@ def get_groq_vision_client() -> ChatGroq:
             raise ValueError("GROQ_API_KEY is not configured.")
 
         _groq_vision_llm = ChatGroq(
-            model_name="qwen/qwen3.6-27b",
+            model_name=VISION_LLM,
             temperature=0.1,  # Low temperature for factual document extraction
             max_tokens=1024,
             groq_api_key=api_key,
